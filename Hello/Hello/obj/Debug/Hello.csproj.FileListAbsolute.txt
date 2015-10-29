@@ -1,0 +1,6 @@
+\\hcfnas003bc1\rdmoas$\Sync\GitHub\C_Sharp_Fundamentals\Hello\Hello\bin\Debug\Hello.exe.config
+\\hcfnas003bc1\rdmoas$\Sync\GitHub\C_Sharp_Fundamentals\Hello\Hello\bin\Debug\Hello.exe
+\\hcfnas003bc1\rdmoas$\Sync\GitHub\C_Sharp_Fundamentals\Hello\Hello\bin\Debug\Hello.pdb
+\\hcfnas003bc1\rdmoas$\Sync\GitHub\C_Sharp_Fundamentals\Hello\Hello\obj\Debug\Hello.csprojResolveAssemblyReference.cache
+\\hcfnas003bc1\rdmoas$\Sync\GitHub\C_Sharp_Fundamentals\Hello\Hello\obj\Debug\Hello.exe
+\\hcfnas003bc1\rdmoas$\Sync\GitHub\C_Sharp_Fundamentals\Hello\Hello\obj\Debug\Hello.pdb

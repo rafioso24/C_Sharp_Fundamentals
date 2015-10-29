@@ -13,3 +13,8 @@ Notes
 C#
 -Needs to be compiled before it is executed
 -In command prompt, you use csc to create an executable (.exe) file
+
+Command Line Compiler
+-Transforms C# code into Microsoft Intermediate Language
+	-CLR transforms these intermediate instructions into native instructions
+
