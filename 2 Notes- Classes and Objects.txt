@@ -1,0 +1,11 @@
+Module 2 - Classes and Objects
+
+-Create a class for a noun ( a person, place, or thing)... an OBJECT
+-Class members define 
+	1. state
+	2.behavior
+
+-The class definition is like a cookie cutter, that stamps out cookies
+	-Instead, the class definition stamps out objects
+
+Constructors
