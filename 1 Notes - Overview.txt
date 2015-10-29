@@ -18,3 +18,8 @@ Command Line Compiler
 -Transforms C# code into Microsoft Intermediate Language
 	-CLR transforms these intermediate instructions into native instructions
 
+Visual Studio
+-Debug-> start without debugging //quickest way to test the program
+-F5: Run with Debugger
+-F10: Step through program
+
