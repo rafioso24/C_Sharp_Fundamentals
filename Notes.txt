@@ -1,0 +1,15 @@
+Notes
+
+.NET Framework
+-Applications run on top of the .NET framework
+-Common Language Runtime (CLR): manages your app as it runs
+	-manages memory
+	-OS and hardware independent
+	-Language independent
+-Framework Class library (FCL): what you interact with
+	-Library of functionality
+	-Huge (ASP.net is just one section of the FCL, for web apps)
+
+C#
+-Needs to be compiled before it is executed
+-In command prompt, you use csc to create an executable (.exe) file
