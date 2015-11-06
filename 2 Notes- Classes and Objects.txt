@@ -8,4 +8,9 @@ Module 2 - Classes and Objects
 -The class definition is like a cookie cutter, that stamps out cookies
 	-Instead, the class definition stamps out objects
 
-Constructors
+Constructors- special methods used to initialize objects.
+	-"ctor" + TAB TAB to create constructor in VS
+
+Classes vs variables
+	-Class = blueprint for creating objects
+	-Class can also be used to type a variable

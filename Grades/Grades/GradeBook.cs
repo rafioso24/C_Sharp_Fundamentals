@@ -6,11 +6,15 @@ using System.Threading.Tasks;
 
 namespace Grades
 {
-    class GradeBook{
+    class GradeBook{ //class = the cookie cutter
+
+        public GradeBook() 
+        {
+        }
         public void AddGrade(float grade){
             grades.Add(grade);
             
         }
-        List<float> grades = new List<float>();
+        List<float> grades = new List<float>(); //imediately initialize this field to a new list
     }
 }
