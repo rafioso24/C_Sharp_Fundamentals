@@ -14,3 +14,21 @@ Constructors- special methods used to initialize objects.
 Classes vs variables
 	-Class = blueprint for creating objects
 	-Class can also be used to type a variable
+
+Reference Types
+	-classes are reference types
+	-variables hold a pointer value
+
+Access Modifiers
+	-ex: public, private
+	-encapsulation method
+
+Statics
+	- use static members of a class without creating an instance
+	-can be accessed without creating an instance of that class
+	ex) public static flot minimumGrade = 0;
+	ex) console.writeline("hello") //don't have to create a console object to do this
+
+-C# for each loop is very helpful
+
+shortcut: type cw + TAB + TAB to quickly make a writeline statement
