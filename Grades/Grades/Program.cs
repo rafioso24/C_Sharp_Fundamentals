@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Speech.Synthesis;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -10,6 +11,8 @@ namespace Grades
     {
         static void Main(string[] args)
         {
+            SpeechSynthesizer synth = new SpeechSynthesizer();
+            synth.Speak("Hello! this is the real life?");
             GradeBook book = new GradeBook();  //invoke the constructor to make a new Gradebook object
             book.AddGrade(91);
             book.AddGrade(89.5f);     // apply an 'f' to show that it's a floating point number

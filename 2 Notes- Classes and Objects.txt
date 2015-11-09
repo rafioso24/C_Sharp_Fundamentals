@@ -32,3 +32,4 @@ Statics
 -C# for each loop is very helpful
 
 shortcut: type cw + TAB + TAB to quickly make a writeline statement
+

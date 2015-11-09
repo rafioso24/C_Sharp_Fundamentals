@@ -1,0 +1,19 @@
+Assemblies
+	- A c# compiler makes a .exe file, called an assembly
+	-.net assemblies are .exe or .dll
+		-contain metadata about all types inside
+	-some classes live in an assembly provided by .net.
+		-they are in a "global assembly cache" on your local machine
+	-DLL's (dynamic link library) can not be executed directory	
+
+	shortcut: fn + F12 to see a class definitition of a class in code
+
+	References
+		-must have an assembly loaded into memory to use the types inside of it
+		-References -> view in object browser
+
+	Unit Testing- write code to test code
+		-Right click on solution-> add -> test -> unit test
+		-Tests-> run -> run all tests
+		[TestMethod], [TestClass] - attribute notation in C#
+		
