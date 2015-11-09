@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace Grades
 {
-    class GradeBook{ //class = the cookie cutter
+   public class GradeBook{ //class = the cookie cutter
 
         public GradeBook() 
         {

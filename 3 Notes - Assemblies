@@ -11,9 +11,9 @@ Assemblies
 	References
 		-must have an assembly loaded into memory to use the types inside of it
 		-References -> view in object browser
+		-Another project in the same solution can be a reference (right click on references -> add reference)
 
 	Unit Testing- write code to test code
 		-Right click on solution-> add -> test -> unit test
 		-Tests-> run -> run all tests
 		[TestMethod], [TestClass] - attribute notation in C#
-		

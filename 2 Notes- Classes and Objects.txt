@@ -19,9 +19,10 @@ Reference Types
 	-classes are reference types
 	-variables hold a pointer value
 
-Access Modifiers
-	-ex: public, private
-	-encapsulation method
+Access Modifiers visibility
+	-public: everywhere
+	-private: same class
+	-internal: same assembly
 
 Statics
 	- use static members of a class without creating an instance

@@ -9,7 +9,6 @@ namespace Grades.Tests
         [TestMethod]
         public void TestMethod1()
         {
-            Assert.AreEqual(3, 4);
         }
     }
 }
