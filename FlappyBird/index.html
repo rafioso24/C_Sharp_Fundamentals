@@ -147,6 +147,7 @@
   <span id="audit-stats">AI AUDIT</span>
   <div class="audit-row">
     <button type="button" id="audit-speed">Speed 1×</button>
+    <button type="button" id="audit-boxes">Hitboxes off</button>
     <button type="button" id="audit-log-btn">Crash log (0)</button>
     <button type="button" id="audit-stop">Stop</button>
   </div>
@@ -164,6 +165,8 @@
 (() => {
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
+  // Older phones lack roundRect; fall back to a plain rectangle
+  if (!ctx.roundRect) CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h) { this.rect(x, y, w, h); };
 
   // Game world size (logical units). It is scaled to fill the screen height.
   const H = 640;
@@ -172,15 +175,12 @@
   const GRAVITY = 1250;   // sinking pull, units per second squared
   const KICK = -430;      // upward speed on tap
   const SPEED = 145;      // scroll speed
-  const GAP = 170;        // opening between top and bottom obstacles
-  const COL_W = 70;       // obstacle width
   const SPACING = 250;    // normal distance between obstacle columns
   const PX_PER_M = 40;    // world units per meter of distance
   const FLOOR = 80;       // sea floor height
   const DIVER_R = 13;
   const STEP = 1 / 60;    // fixed physics step, so the AI can predict the game exactly
 
-  const KINDS = ["coral", "wreck", "rocks"];
   const HAZARDS = ["jelly", "shark", "puffer", "mine", "barrel"];
 
   let state, diver, cols, hazards, bubbles, score, dist, calmT, best, floorX, overT, time, bubbleT;
@@ -233,24 +233,456 @@
     bubbleT = 0;
   }
 
-  function addCol(x) {
-    const minTop = 70, maxTop = H - FLOOR - GAP - 70;
+  /* ---------- Obstacle library ----------
+     Each gate has a piece hanging from the surface and a piece rising from the
+     sea floor, with a clear opening between them. Every piece has its own size,
+     art, and hit shapes. Hit shapes sit inside the art, so what you see is fair.
+     Hit shapes: R = rectangle, C = circle, E = ellipse, in piece-local x and world y. */
+
+  const FLOOR_Y = H - FLOOR;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const R = (x, y, w, h) => ({ t: "r", x, y, w, h });
+  const C = (x, y, r) => ({ t: "c", x, y, r });
+  const E = (x, y, rx, ry) => ({ t: "e", x, y, rx, ry });
+
+  function fillE(x, y, rx, ry, col, rot = 0) {
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.ellipse(x, y, Math.max(0.1, rx), Math.max(0.1, ry), rot, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  function fillR(x, y, w, h, col, rad = 0) {
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    if (rad) ctx.roundRect(x, y, w, h, rad); else ctx.rect(x, y, w, h);
+    ctx.fill();
+  }
+  function poly(pts, col) {
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.fill();
+  }
+  function line(pts, w, col) {
+    ctx.strokeStyle = col;
+    ctx.lineWidth = w;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.stroke();
+  }
+  function chain(x, y0, y1, col) {
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2.5;
+    for (let y = y0; y < y1 - 4; y += 9) {
+      ctx.beginPath();
+      ctx.ellipse(x, y + 4, 3, 5, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  function spikyBall(x, y, r, body, light) {
+    ctx.strokeStyle = "#2a323c";
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    for (let k = 0; k < 8; k++) {
+      const a = (k * Math.PI) / 4 + 0.2;
+      ctx.beginPath();
+      ctx.moveTo(x + Math.cos(a) * (r - 4), y + Math.sin(a) * (r - 4));
+      ctx.lineTo(x + Math.cos(a) * (r + 6), y + Math.sin(a) * (r + 6));
+      ctx.stroke();
+    }
+    fillE(x, y, r, r, body);
+    fillE(x - r * 0.35, y - r * 0.35, r * 0.25, r * 0.18, "rgba(255,255,255,0.18)");
+    fillE(x, y, 4, 4, light);
+  }
+  function fish(x, y, s, col, flip) {
+    ctx.save();
+    ctx.translate(x, y);
+    if (flip) ctx.scale(-1, 1);
+    fillE(0, 0, 6 * s, 2.6 * s, col);
+    poly([[5 * s, 0], [10 * s, -3 * s], [10 * s, 3 * s]], col);
+    ctx.restore();
+  }
+
+  /* ----- Pieces rising from the sea floor: region y from FLOOR_Y - h to FLOOR_Y ----- */
+  const BOTTOMS = [
+    { name: "half-buried pirate ship", minH: 110, build(h) {
+      const w = 170, Y = FLOOR_Y, yT = Y - h;
+      const hullH = Math.min(80, h * 0.5), hullTop = Y - hullH, mx = 96;
+      const room = hullTop - yT;
+      const nest = room > 60, sh = Math.min(70, room - 60), sail = sh > 34;
+      const prims = [R(12, hullTop + 16, 150, hullH - 16), R(mx - 4, yT + 12, 8, room)];
+      if (nest) prims.push(R(mx - 11, yT + 3, 22, 10));
+      if (sail) prims.push(R(mx - 26, yT + 38, 48, sh - 20));
+      return { name: this.name, w, prims, draw() {
+        // Mast, yard, sail, crow's nest, flag
+        fillR(mx - 4, yT + 10, 8, room + 10, "#4a321f");
+        if (sail) {
+          fillR(mx - 34, yT + 30, 68, 5, "#4a321f");
+          const s0 = yT + 33, s1 = s0 + sh;
+          poly([[mx - 32, s0], [mx + 30, s0], [mx + 27, s1], [mx + 12, s1 - 10], [mx, s1], [mx - 14, s1 - 12], [mx - 30, s1]], "#e8dcc0");
+          fillE(mx - 4, s0 + sh * 0.45, 9, 7, "rgba(60,40,20,0.35)");
+        }
+        if (nest) fillR(mx - 11, yT + 2, 22, 12, "#5a3b22", 2);
+        const fy = yT + (nest ? 2 : 10), wave = Math.sin(time * 5) * 2;
+        poly([[mx + 4, fy - 2], [mx + 26, fy + wave], [mx + 24, fy + 12 + wave], [mx + 4, fy + 10]], "#1a1a1a");
+        fillE(mx + 14, fy + 5 + wave / 2, 3, 3, "#f4f4f4");
+        // Tilted hull
+        poly([[4, Y], [0, hullTop + 6], [14, hullTop], [40, hullTop + 8], [150, hullTop + 12], [170, hullTop + 2], [166, Y]], "#5a3b22");
+        line([[6, hullTop + 14], [166, hullTop + 18]], 3, "#c9a227");
+        ctx.strokeStyle = "#3e2915";
+        ctx.lineWidth = 2;
+        for (let yy = hullTop + 28; yy < Y; yy += 13) { ctx.beginPath(); ctx.moveTo(4, yy); ctx.lineTo(166, yy + 3); ctx.stroke(); }
+        for (let x = 24; x < 160; x += 30) fillR(x, hullTop + 22, 12, 8, "#1b120a", 2);
+        poly([[110, hullTop + 30], [130, hullTop + 26], [138, hullTop + 44], [118, hullTop + 50]], "#1b120a");
+        fillE(30, hullTop + 18, 8, 5, "#4f8a4a");
+        fillE(85, Y + 6, 95, 20, "#d9bf86");
+      } };
+    } },
+    { name: "tethered mine", minH: 64, build(h) {
+      const w = 54, Y = FLOOR_Y, yT = Y - h, cx = 27, by = yT + 26;
+      return { name: this.name, w, prims: [C(cx, by, 14), R(cx - 2, by + 16, 4, Y - by - 28), R(cx - 14, Y - 12, 28, 12)], draw() {
+        chain(cx, by + 14, Y - 12, "#7a7f86");
+        fillR(cx - 16, Y - 14, 32, 14, "#6b6f75", 3);
+        spikyBall(cx, by, 17, "#3b4550", Math.sin(time * 6) > 0 ? "#ff3b3b" : "#7a1d1d");
+      } };
+    } },
+    { name: "seaweed patch", minH: 40, build(h) {
+      const w = 104, Y = FLOOR_Y, n = 6, tall = Math.floor(Math.random() * n);
+      const cols = ["#3f9d4f", "#5bb85a", "#2e7d3f", "#b0413e", "#4caf6a", "#3f9d4f"];
+      const strands = Array.from({ length: n }, (_, i) => ({
+        x: 12 + i * 16,
+        h: i === tall ? h : Math.max(30, rnd(0.45, 0.95) * h),
+        col: cols[(i + Math.floor(Math.random() * 6)) % 6],
+        ph: Math.random() * 6,
+      }));
+      return { name: this.name, w, prims: strands.map(s => R(s.x - 3, Y - s.h + 6, 6, s.h - 6)), draw() {
+        for (const s of strands) {
+          const pts = [];
+          for (let y = 0; y <= s.h; y += 8) {
+            const f = y / s.h;
+            pts.push([s.x + Math.sin(time * 1.6 + s.ph + y * 0.05) * 2 * f, Y - y]);
+          }
+          line(pts, 9, s.col);
+          for (let y = 16; y < s.h - 6; y += 18) {
+            const f = y / s.h, sx = s.x + Math.sin(time * 1.6 + s.ph + y * 0.05) * 2 * f;
+            fillE(sx + ((y / 18) % 2 ? 7 : -7), Y - y, 6, 3, s.col, (y / 18) % 2 ? -0.5 : 0.5);
+          }
+        }
+      } };
+    } },
+    { name: "coral reef", minH: 50, build(h) {
+      const w = 100, Y = FLOOR_Y, yT = Y - h;
+      const baseH = Math.max(0, h - rnd(80, 120)), top0 = Y - baseH, ch = h - baseH;
+      const palette = ["#ff7f6e", "#ffb26b", "#d65a8a", "#b069c9", "#ff5d8f"];
+      const main = Math.floor(Math.random() * 3);
+      const cl = [22, 50, 78].map((x, i) => {
+        const hc = i === main ? ch : rnd(0.5, 0.85) * ch;
+        return { x, t: top0 - hc, col: palette[Math.floor(Math.random() * palette.length)] };
+      });
+      const prims = [];
+      if (baseH > 8) prims.push(R(20, top0 + 8, 58, baseH - 8));
+      for (const c of cl) prims.push(R(c.x - 7, c.t + 10, 14, top0 - c.t - 6), C(c.x, c.t + 10, 8));
+      return { name: this.name, w, prims, draw() {
+        if (baseH > 8) poly([[8, Y], [12, top0 + 10], [26, top0], [70, top0 + 2], [90, top0 + 12], [94, Y]], "#4d5d70");
+        for (const c of cl) {
+          const sway = Math.sin(time * 1.3 + c.x) * 1.5;
+          line([[c.x, top0 + 4], [c.x + sway, c.t + 10]], 18, c.col);
+          const len = top0 - c.t;
+          for (let k = 1; k <= 2; k++) {
+            const yy = c.t + len * (0.3 + k * 0.22), side = k % 2 ? 1 : -1;
+            if (len > 50) line([[c.x, yy], [c.x + side * 15 + sway, yy - 16]], 9, c.col);
+          }
+          ctx.fillStyle = "rgba(255,240,230,0.7)";
+          for (let yy = c.t + 16; yy < top0; yy += 14) ctx.fillRect(c.x - 2 + ((yy * 7) % 5) - 2, yy, 3, 3);
+        }
+      } };
+    } },
+    { name: "boulder pile", minH: 40, build(h) {
+      const w = 110, Y = FLOOR_Y, yT = Y - h;
+      const n = Math.max(1, Math.round(h / 52)), seg = (h + 8) / n;
+      const rocks = [];
+      let cx = w / 2;
+      for (let i = 0; i < n; i++) {
+        let r = clamp(seg * 0.62 + rnd(-3, 3), 16, 50);
+        const cy = Y + 8 - seg * (i + 0.5);
+        if (i === n - 1) r = Math.min(r, cy - yT);
+        cx = clamp(cx + rnd(-18, 18), r + 2, w - r - 2);
+        rocks.push({ x: cx, y: cy, r, tone: ["#56677a", "#46566a", "#61748a"][i % 3] });
+      }
+      const star = rocks[Math.floor(Math.random() * rocks.length)];
+      return { name: this.name, w, prims: rocks.map(k => C(k.x, k.y, k.r - 3)), draw() {
+        for (const k of rocks) {
+          fillE(k.x, k.y, k.r, k.r * 0.95, k.tone);
+          fillE(k.x - k.r * 0.3, k.y - k.r * 0.4, k.r * 0.35, k.r * 0.15, "rgba(255,255,255,0.12)");
+          fillE(k.x + k.r * 0.4, k.y + k.r * 0.3, 3, 3, "#c8d0d8");
+        }
+        ctx.fillStyle = "#ff9a3c";
+        ctx.beginPath();
+        for (let q = 0; q < 10; q++) {
+          const a = -Math.PI / 2 + (q * Math.PI) / 5, rr = q % 2 ? 4 : 10;
+          ctx.lineTo(star.x + Math.cos(a) * rr, star.y + Math.sin(a) * rr);
+        }
+        ctx.fill();
+        const top = rocks[rocks.length - 1];
+        for (let q = -2; q <= 2; q++) line([[top.x + q * 4, top.y - top.r * 0.8], [top.x + q * 6 + Math.sin(time * 3 + q) * 2, top.y - top.r * 0.8 - 10]], 3, "#ff8fc7");
+      } };
+    } },
+    { name: "giant clam", minH: 76, build(h) {
+      const w = 110, Y = FLOOR_Y, yT = Y - h;
+      return { name: this.name, w, prims: [E(55, yT + 30, 44, 20), R(32, yT + 50, 48, h - 50)], draw() {
+        poly([[18, Y], [22, yT + 60], [34, yT + 44], [76, yT + 44], [90, yT + 58], [94, Y]], "#4d5d70");
+        const open = 6 + Math.sin(time * 1.2) * 4;
+        fillE(55, yT + 30, 46, 20, "#2ec4b6");
+        fillE(55, yT + 30 - open * 0.3, 6, 6, "#fdf6e3");
+        ctx.fillStyle = "#8a7bc4";
+        ctx.beginPath();
+        ctx.ellipse(55, yT + 32, 50, 22, 0, 0, Math.PI);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(55, yT + 30 - open, 50, 22, 0, Math.PI, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#6a5aa8";
+        ctx.lineWidth = 2;
+        for (let q = -3; q <= 3; q++) {
+          ctx.beginPath(); ctx.moveTo(55, yT + 32); ctx.lineTo(55 + q * 14, yT + 52); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(55, yT + 30 - open); ctx.lineTo(55 + q * 14, yT + 10 - open); ctx.stroke();
+        }
+      } };
+    } },
+    { name: "shipwreck hull", minH: 30, build(h) {
+      const w = Math.round(rnd(80, 112)), Y = FLOOR_Y, yT = Y - h;
+      const jag = [[-4, yT + 10], [w * 0.2, yT], [w * 0.38, yT + 14], [w * 0.6, yT + 2], [w * 0.8, yT + 12], [w + 4, yT + 4]];
+      return { name: this.name, w, prims: [R(0, yT + 14, w, h - 14)], draw() {
+        poly([[-4, Y], ...jag, [w + 4, Y]], "#6b4a2f");
+        ctx.strokeStyle = "#4a321f";
+        ctx.lineWidth = 2;
+        for (let yy = yT + 20; yy < Y; yy += 14) { ctx.beginPath(); ctx.moveTo(-4, yy); ctx.lineTo(w + 4, yy); ctx.stroke(); }
+        fillR(w - 10, yT + 14, 14, h - 14, "rgba(0,0,0,0.25)");
+        for (let py = yT + 44; py < Y - 14; py += 60) { fillE(w / 2, py, 10, 10, "#c9a227"); fillE(w / 2, py, 6, 6, "#0b2236"); }
+        fillE(10, yT + 14, 6, 5, "#4f8a4a");
+        fillE(w * 0.6, yT + 8, 5, 4, "#4f8a4a");
+      } };
+    } },
+    { name: "hot vent chimney", minH: 70, build(h) {
+      const w = 76, Y = FLOOR_Y, yT = Y - h, cx = 38, tw = 26, bw = 72;
+      const wid = y => tw + ((bw - tw) * (y - yT)) / h;
+      const prims = [];
+      const seg = (h - 6) / 4;
+      for (let k = 0; k < 4; k++) { const y0 = yT + 6 + k * seg, ww = wid(y0) - 4; prims.push(R(cx - ww / 2, y0, ww, seg + 1)); }
+      return { name: this.name, w, prims, draw() {
+        poly([[cx - bw / 2, Y], [cx - tw / 2, yT + 4], [cx + tw / 2, yT + 4], [cx + bw / 2, Y]], "#3a3335");
+        for (let y = yT + 24; y < Y; y += 26) fillE(cx + ((y * 13) % 9) - 4, y, wid(y) / 2 - 2, 5, "#4a4245");
+        fillR(cx - tw / 2 - 2, yT + 2, tw + 4, 6, "#ff7a2f", 3);
+        fillE(cx, yT + 4, tw / 2 - 3, 3, "#ffd166");
+        for (let q = 0; q < 4; q++) {
+          const t = (time * 0.8 + q / 4) % 1;
+          fillE(cx + Math.sin(t * 9 + q) * 4, yT - t * 26, 3 + t * 4, 3 + t * 4, `rgba(230,240,255,${0.45 * (1 - t)})`);
+        }
+      } };
+    } },
+    { name: "octopus rock", minH: 100, build(h) {
+      const w = 120, Y = FLOOR_Y, yT = Y - h, rt = yT + 46;
+      return { name: this.name, w, prims: [R(18, rt + 10, 86, Y - rt - 10), E(60, yT + 22, 19, 19), R(30, yT + 38, 60, 10)], draw() {
+        poly([[4, Y], [8, rt + 14], [26, rt], [94, rt + 2], [112, rt + 16], [116, Y]], "#56677a");
+        fillE(40, rt + 18, 10, 5, "rgba(255,255,255,0.1)");
+        for (let q = 0; q < 6; q++) {
+          const side = q < 3 ? -1 : 1, k = q % 3;
+          const x0 = 60 + side * (8 + k * 6), wv = Math.sin(time * 2 + q) * 4;
+          line([[x0, yT + 40], [x0 + side * (18 + k * 8), yT + 48 + k * 4 + wv], [x0 + side * (26 + k * 10), yT + 40 + k * 6 - wv]], 7, "#d9534f");
+        }
+        fillE(60, yT + 42, 32, 9, "#d9534f");
+        fillE(60, yT + 22, 22, 22, "#e8735a");
+        fillE(52, yT + 22, 5, 6, "#fff"); fillE(68, yT + 22, 5, 6, "#fff");
+        fillE(53, yT + 23, 2.5, 3, "#1b1b1b"); fillE(69, yT + 23, 2.5, 3, "#1b1b1b");
+        fillE(56, yT + 8, 3, 2, "#f5a08a"); fillE(66, yT + 12, 2, 2, "#f5a08a");
+      } };
+    } },
+  ];
+
+  /* ----- Pieces hanging from the surface: region y from 0 to h ----- */
+  const TOPS = [
+    { name: "rock ledge", minH: 30, build(h) {
+      const w = Math.round(rnd(70, 112)), B = h;
+      const deco = Math.floor(Math.random() * 3);
+      return { name: this.name, w, prims: [R(0, 0, w, B - 22)], draw() {
+        poly([[-6, 0], [w + 6, 0], [w + 4, B - 22], [w - 6, B - 4], [w * 0.72, B - 16], [w * 0.5, B], [w * 0.3, B - 18], [10, B - 2], [-4, B - 20]], "#33465c");
+        fillR(w - 14, 0, 18, Math.max(0, B - 24), "#24364a");
+        fillR(6, 0, 8, Math.max(0, B - 26), "rgba(255,255,255,0.08)");
+        if (deco === 0) for (let i = 0; i < 3; i++) { const fx = 12 + i * (w - 24) / 2; line([[fx, B - 30], [fx - 5, B - 18]], 3, "#ff8fa3"); line([[fx, B - 30], [fx + 5, B - 16]], 3, "#ff8fa3"); }
+        if (deco === 1) for (let i = 0; i < 2; i++) { const kx = 16 + i * (w - 32); line([[kx, B - 26], [kx + Math.sin(time * 2 + i) * 4, B - 16], [kx + 2, B - 8]], 5, "#3f9d4f"); }
+        if (deco === 2) for (let i = 0; i < 5; i++) fillE(10 + i * (w - 20) / 4, B - 26 - (i % 2) * 8, 4, 3, "#c8d0d8");
+      } };
+    } },
+    { name: "fishing boat net", minH: 120, build(h) {
+      const w = 140, B = h;
+      return { name: this.name, w, prims: [R(10, 0, 120, 26), R(46, 50, 48, B - 84), R(60, B - 34, 20, 26)], draw() {
+        line([[30, 28], [40, 48]], 2, "#d8cfa8");
+        line([[110, 28], [100, 48]], 2, "#d8cfa8");
+        const bag = [[36, 46], [104, 46], [98, B - 30], [80, B - 4], [60, B - 4], [42, B - 30]];
+        poly(bag, "rgba(216, 207, 168, 0.35)");
+        ctx.save();
+        ctx.beginPath();
+        bag.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.closePath();
+        ctx.clip();
+        ctx.strokeStyle = "rgba(240, 232, 200, 0.8)";
+        ctx.lineWidth = 1.2;
+        for (let d = -B; d < B + 140; d += 10) {
+          ctx.beginPath(); ctx.moveTo(d, 40); ctx.lineTo(d + B, 40 + B); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(d + B, 40); ctx.lineTo(d, 40 + B); ctx.stroke();
+        }
+        for (let q = 0; q < 5; q++) fish(56 + (q % 3) * 12, B - 20 - q * 14, 1, "#c0d6e4", q % 2);
+        ctx.restore();
+        poly([[0, 0], [140, 0], [126, 30], [14, 30]], "#a0522d");
+        fillR(4, 6, 132, 5, "#f4f4f4");
+        fillE(20, 18, 4, 4, "#1b120a");
+      } };
+    } },
+    { name: "hanging anchor", minH: 90, build(h) {
+      const w = 70, B = h;
+      return { name: this.name, w, prims: [R(32, 0, 6, B - 50), R(31, B - 50, 8, 40), R(19, B - 50, 32, 5), ...[0.2, 0.35, 0.5, 0.65, 0.8].map(a => C(35 + Math.cos(a * Math.PI) * 24, B - 32 + Math.sin(a * Math.PI) * 24, 3.5))], draw() {
+        chain(35, 0, B - 50, "#8a8f96");
+        fillR(30, B - 52, 10, 46, "#5d6670", 2);
+        fillR(17, B - 52, 36, 7, "#5d6670", 3);
+        ctx.strokeStyle = "#5d6670";
+        ctx.lineWidth = 9;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.arc(35, B - 32, 24, 0.15 * Math.PI, 0.85 * Math.PI);
+        ctx.stroke();
+        poly([[8, B - 26], [20, B - 16], [10, B - 12]], "#5d6670");
+        poly([[62, B - 26], [50, B - 16], [60, B - 12]], "#5d6670");
+        fillE(28, B - 30, 4, 3, "#a8643a");
+      } };
+    } },
+    { name: "submarine", minH: 100, build(h) {
+      const w = 186, B = h;
+      return { name: this.name, w, prims: [E(90, B - 30, 84, 23), R(73, B - 70, 34, 26), R(93, 0, 4, B - 72)], draw() {
+        fillR(92, 0, 6, B - 70, "#9aa3ad");
+        fillR(70, B - 74, 40, 30, "#e0a92e", 8);
+        const spin = Math.abs(Math.sin(time * 14));
+        fillE(180, B - 30, 3, 14 * spin + 2, "#7a5c12");
+        fillE(90, B - 30, 88, 26, "#f2c14e");
+        fillE(90, B - 22, 80, 10, "rgba(0,0,0,0.12)");
+        poly([[150, B - 52], [170, B - 58], [166, B - 46]], "#e0a92e");
+        poly([[150, B - 8], [170, B - 2], [166, B - 14]], "#e0a92e");
+        for (let q = 0; q < 4; q++) { fillE(36 + q * 30, B - 34, 7, 7, "#7a5c12"); fillE(36 + q * 30, B - 34, 4.5, 4.5, "#9be7ff"); }
+        fillR(4, B - 34, 14, 6, "#7a5c12", 3);
+      } };
+    } },
+    { name: "whale", minH: 80, build(h) {
+      const w = 200, B = h;
+      return { name: this.name, w, prims: [E(92, B - 36, 84, 29), R(168, B - 44, 10, 16)], draw() {
+        const f = Math.sin(time * 2.2) * 6;
+        poly([[168, B - 50], [186, B - 42 + f], [200, B - 60 + f], [196, B - 36 + f], [200, B - 12 + f], [186, B - 30 + f], [168, B - 22]], "#34507a");
+        fillE(92, B - 36, 90, 34, "#3d5a80");
+        ctx.save();
+        ctx.beginPath();
+        ctx.ellipse(92, B - 36, 90, 34, 0, 0, Math.PI * 2);
+        ctx.clip();
+        fillE(84, B - 6, 80, 22, "#c9d6df");
+        ctx.strokeStyle = "#9fb2c0";
+        ctx.lineWidth = 1.5;
+        for (let q = 0; q < 6; q++) { ctx.beginPath(); ctx.moveTo(20 + q * 10, B - 18 + q); ctx.lineTo(110 + q * 8, B - 14 + q); ctx.stroke(); }
+        ctx.restore();
+        line([[8, B - 30], [40, B - 26]], 2, "#24384f");
+        fillE(36, B - 42, 4, 4, "#0b1624");
+        poly([[78, B - 18], [104, B - 4], [70, B - 8]], "#34507a");
+        for (let q = 0; q < 3; q++) {
+          const t = (time * 0.6 + q / 3) % 1;
+          fillE(60 + Math.sin(t * 8) * 3, B - 70 - t * 40, 2 + t * 3, 2 + t * 3, `rgba(220,248,255,${0.6 * (1 - t)})`);
+        }
+      } };
+    } },
+    { name: "school of fish", minH: 70, build(h) {
+      const w = 150, B = h, ry = Math.min(34, (B - 6) / 2), cy = B - ry - 4, rx = 72;
+      const school = Array.from({ length: 44 }, () => ({ a: Math.random() * 6.28, f: Math.sqrt(Math.random()) * 0.92, s: rnd(0.8, 1.2) }));
+      const col = ["#c0d6e4", "#9ec5dc", "#e2eef5"][Math.floor(Math.random() * 3)];
+      return { name: this.name, w, prims: [E(75, cy, rx * 0.8, ry * 0.72)], draw() {
+        fillE(75, cy, rx * 0.92, ry * 0.88, "rgba(190, 225, 245, 0.16)");
+        for (const p of school) {
+          const a = p.a + time * 0.9;
+          fish(75 + Math.cos(a) * rx * p.f, cy + Math.sin(a) * ry * p.f, p.s, col, Math.sin(a) > 0);
+        }
+      } };
+    } },
+    { name: "sargassum mat", minH: 40, build(h) {
+      const w = 110, B = h, n = 6, tall = Math.floor(Math.random() * n);
+      const strands = Array.from({ length: n }, (_, i) => ({ x: 10 + i * 18, h: i === tall ? B : Math.max(24, rnd(0.4, 0.9) * B), ph: Math.random() * 6 }));
+      return { name: this.name, w, prims: [R(0, 0, w, 12), ...strands.map(s => R(s.x - 3, 0, 6, s.h - 6))], draw() {
+        for (const s of strands) {
+          const pts = [];
+          for (let y = 0; y <= s.h; y += 8) pts.push([s.x + Math.sin(time * 1.4 + s.ph + y * 0.05) * 2 * (y / s.h), y]);
+          line(pts, 8, "#a8862f");
+          for (let y = 14; y < s.h - 6; y += 16) fillE(s.x + ((y / 16) % 2 ? 6 : -6), y, 3, 3, "#d4b04c");
+        }
+        for (let x = 0; x <= w; x += 14) fillE(x, 6, 12, 10, x % 28 ? "#b8963a" : "#a8862f");
+      } };
+    } },
+    { name: "buoy mine", minH: 70, build(h) {
+      const w = 54, B = h, cx = 27, by = B - 26;
+      return { name: this.name, w, prims: [R(cx - 2, 0, 4, by - 14), C(cx, by, 14)], draw() {
+        chain(cx, 0, by - 14, "#7a7f86");
+        spikyBall(cx, by, 17, "#4a3b50", Math.sin(time * 6 + 1) > 0 ? "#ffd23f" : "#7a5c12");
+      } };
+    } },
+  ];
+
+  function pickPiece(list, h) {
+    const ok = list.filter(k => k.minH <= h);
+    return ok[Math.floor(Math.random() * ok.length)].build(h);
+  }
+
+  // Collision between the diver's circle and one piece's hit shapes
+  function hitPrims(prims, ox, cx, y, r) {
+    const lx = cx - ox;
+    for (const p of prims) {
+      if (p.t === "r") {
+        const nx = clamp(lx, p.x, p.x + p.w), ny = clamp(y, p.y, p.y + p.h);
+        if ((lx - nx) ** 2 + (y - ny) ** 2 < r * r) return true;
+      } else if (p.t === "c") {
+        if ((lx - p.x) ** 2 + (y - p.y) ** 2 < (p.r + r) ** 2) return true;
+      } else {
+        const a = p.rx + r, b = p.ry + r;
+        if ((lx - p.x) ** 2 / (a * a) + (y - p.y) ** 2 / (b * b) < 1) return true;
+      }
+    }
+    return false;
+  }
+
+  function drawPrims(prims, ox) {
+    ctx.strokeStyle = "rgba(255, 60, 90, 0.9)";
+    ctx.lineWidth = 1.5;
+    for (const p of prims) {
+      ctx.beginPath();
+      if (p.t === "r") ctx.rect(ox + p.x, p.y, p.w, p.h);
+      else if (p.t === "c") ctx.arc(ox + p.x, p.y, p.r, 0, Math.PI * 2);
+      else ctx.ellipse(ox + p.x, p.y, p.rx, p.ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  function addGate(x) {
     const prev = cols[cols.length - 1];
-    const col = {
-      x,
-      top: minTop + Math.random() * (maxTop - minTop),
-      kind: KINDS[Math.floor(Math.random() * KINDS.length)],
-      seed: Math.random() * 1000,
-      passed: false,
-      gap: pickGap(prev),
-    };
-    cols.push(col);
+    const gap = rnd(165, 195);
+    const minTop = 60, maxTop = FLOOR_Y - 60 - gap;
+    let top = rnd(minTop, maxTop);
+    if (prev) top = clamp(top, prev.top - 170, prev.top + 170);
+    top = clamp(top, minTop, maxTop);
+    const bot = top + gap;
+    const tp = pickPiece(TOPS, top), bp = pickPiece(BOTTOMS, FLOOR_Y - bot);
+    const w = Math.max(tp.w, bp.w);
+    const g = { x, w, top, bot, tp, bp, tox: (w - tp.w) / 2, box: (w - bp.w) / 2, passed: false, gap: pickGap(prev) };
+    cols.push(g);
     if (!prev) return;
-    // Fill the open water between the last column and this one
-    const start = prev.x + COL_W, len = x - start;
+    // Fill the open water between the last gate and this one
+    const start = prev.x + prev.w, len = x - start;
     if (prev.gap.type === "wide") {
-      // Long stretch: several creatures and hazards spread across it
-      const n = len > 500 ? 3 : 2;
+      const n = len > 440 ? 3 : 2;
       for (let i = 1; i <= n; i++) addHazard(start + (len * i) / (n + 1));
     } else if (prev.gap.type === "normal") {
       if (Math.random() < 0.5 + Math.min(0.4, score * 0.004)) addHazard(start + len / 2);
@@ -258,13 +690,12 @@
     // "calm" gaps stay empty for easy swimming
   }
 
-  // Decide how far away the next column is, and what fills the space
+  // Open water after a gate: normal, wide (more creatures), or calm (empty)
   function pickGap(prev) {
     const r = Math.random();
-    // Never two calm stretches in a row
-    if (r < 0.12 && !(prev && prev.gap.type === "calm")) return { type: "calm", len: 650 + Math.random() * 150 };
-    if (r < 0.37) return { type: "wide", len: 460 + Math.random() * 160 };
-    return { type: "normal", len: SPACING };
+    if (r < 0.12 && !(prev && prev.gap.type === "calm")) return { type: "calm", len: rnd(580, 730) };
+    if (r < 0.37) return { type: "wide", len: rnd(390, 550) };
+    return { type: "normal", len: 180 };
   }
 
   function addHazard(x) {
@@ -297,7 +728,7 @@
     if (state === "ready") {
       state = "play";
       buoyUI.hidden = true;
-      addCol(W + 40);
+      addGate(W + 40);
       if (audit) { runs++; runStartT = time; failSnap = null; updateHud(); }
     }
     if (state === "play") {
@@ -338,11 +769,12 @@
   function hitTest(y, k, margin) {
     const off = SPEED * STEP * k;
     const r = DIVER_R - 3 + margin, cx = diver.x + 2;
-    for (const c of cols) {
-      const x = c.x - off;
-      const nx = Math.max(x, Math.min(cx, x + COL_W));
-      if (Math.abs(nx - cx) < r && (y - r < c.top || y + r > c.top + GAP)) {
-        return { what: "column", kind: c.kind, part: y - r < c.top ? "top" : "bottom", dx: Math.round(x - diver.x), gapTop: Math.round(c.top), gapBottom: Math.round(c.top + GAP) };
+    for (const g of cols) {
+      const gx = g.x - off;
+      if (cx + r < gx || cx - r > gx + g.w) continue;
+      const top = hitPrims(g.tp.prims, gx + g.tox, cx, y, r);
+      if (top || hitPrims(g.bp.prims, gx + g.box, cx, y, r)) {
+        return { what: "column", name: top ? g.tp.name : g.bp.name, part: top ? "top" : "bottom", dx: Math.round(gx - diver.x), gapTop: Math.round(g.top), gapBottom: Math.round(g.bot) };
       }
     }
     for (const h of hazards) {
@@ -380,7 +812,7 @@
     if (state === "play") {
       for (const c of cols) {
         c.x -= SPEED * dt;
-        if (!c.passed && c.x + COL_W < diver.x) {
+        if (!c.passed && c.x + c.w < diver.x) {
           c.passed = true;
           if (c.gap.type === "calm") calmT = time;
         }
@@ -402,9 +834,9 @@
       score = Math.floor(dist / PX_PER_M);
       // Keep obstacles coming; if the list ever runs dry, start a new one just off-screen
       let last = cols[cols.length - 1];
-      if (!last) addCol(W + 40);
-      else while (last.x < W + 40) { addCol(last.x + last.gap.len); last = cols[cols.length - 1]; }
-      while (cols.length && cols[0].x < -COL_W - 20) cols.shift();
+      if (!last) addGate(W + 40);
+      else while (last.x < W + 40) { addGate(last.x + last.w + last.gap.len); last = cols[cols.length - 1]; }
+      while (cols.length && cols[0].x + cols[0].w < -40) cols.shift();
       hazards = hazards.filter(h => h.x > -80 && h.baseY < H);
 
       bubbleT += dt;
@@ -424,6 +856,7 @@
   // the game ahead with hitTest(), trying tap / no-tap at each decision point.
   const DEC = 3;          // physics steps between decisions (0.05 s)
   const HORIZON = 36;     // decisions to look ahead (1.8 s)
+  let showBoxes = false;
   let audit = false, auditSpeed = 1, runs = 0, auditBest = 0, runStartT = 0, readyT = 0;
   let aiPath = [], lastPlan = null, failSnap = null, lastCause = null, stepCount = 0;
   const crashes = [];
@@ -448,7 +881,7 @@
     const off = SPEED * STEP * k;
     let target = H * 0.45;
     for (const c of cols) {
-      if (c.x - off + COL_W > diver.x - DIVER_R) { target = c.top + GAP / 2; break; }
+      if (c.x - off + c.w > diver.x - DIVER_R) { target = (c.top + c.bot) / 2; break; }
     }
     return (s.y + s.vy * 0.15 - target) * dir() > 0;
   }
@@ -522,8 +955,8 @@
       distance_m: score,
       diver: { y: Math.round(diver.y), vy: Math.round(diver.vy) },
       columns: cols
-        .filter(c => c.x + COL_W > x0 - 40 && c.x < x0 + 420)
-        .map(c => ({ kind: c.kind, dx: Math.round(c.x - x0), gapTop: Math.round(c.top), gapBottom: Math.round(c.top + GAP), gapAfter: c.gap.type })),
+        .filter(c => c.x + c.w > x0 - 40 && c.x < x0 + 420)
+        .map(c => ({ top: c.tp.name, bottom: c.bp.name, dx: Math.round(c.x - x0), width: Math.round(c.w), gapTop: Math.round(c.top), gapBottom: Math.round(c.bot), gapAfter: c.gap.type })),
       hazards: hazards
         .filter(h => h.x > x0 - 60 && h.x < x0 + 420)
         .map(h => ({ type: h.type, dx: Math.round(h.x - x0), y: Math.round(h.y), swing: h.amp })),
@@ -531,12 +964,11 @@
   }
 
   const HAZARD_NAMES = { jelly: "jellyfish", shark: "shark", puffer: "pufferfish", mine: "sea mine", barrel: "toxic barrel" };
-  const KIND_NAMES = { coral: "coral reef", wreck: "shipwreck", rocks: "rock pile" };
   function causeName(info) {
     if (!info) return "unknown";
     if (info.what === "floor") return "sea floor";
     if (info.what === "surface") return "surface";
-    if (info.what === "column") return info.part === "top" ? "rock ledge above " + KIND_NAMES[info.kind] : KIND_NAMES[info.kind];
+    if (info.what === "column") return info.name;
     return HAZARD_NAMES[info.type] || info.type;
   }
 
@@ -576,7 +1008,7 @@
     const sc = c.first_trouble || c.scene_at_crash;
     lines.push(c.first_trouble ? `Scene when the AI first found no safe path (${sc.run_time_s} s):` : "Scene at crash:");
     lines.push(`  diver y ${sc.diver.y}, speed ${sc.diver.vy}`);
-    for (const col of sc.columns) lines.push(`  ${KIND_NAMES[col.kind]} ${col.dx >= 0 ? "+" : ""}${col.dx} ahead, opening y ${col.gapTop}-${col.gapBottom}, then ${col.gapAfter} gap`);
+    for (const col of sc.columns) lines.push(`  ${col.top} over ${col.bottom}, ${col.dx >= 0 ? "+" : ""}${col.dx} ahead, ${col.width} wide, opening y ${col.gapTop}-${col.gapBottom}, then ${col.gapAfter} gap`);
     for (const h of sc.hazards) lines.push(`  ${HAZARD_NAMES[h.type]} ${h.dx >= 0 ? "+" : ""}${h.dx} ahead, y ${h.y}, swing ±${h.swing}`);
     return lines.join("\n");
   }
@@ -609,6 +1041,10 @@
   }
   document.getElementById("audit-start").addEventListener("click", startAudit);
   document.getElementById("audit-stop").addEventListener("click", stopAudit);
+  document.getElementById("audit-boxes").addEventListener("click", e => {
+    showBoxes = !showBoxes;
+    e.currentTarget.textContent = showBoxes ? "Hitboxes on" : "Hitboxes off";
+  });
   speedBtn.addEventListener("click", () => {
     auditSpeed = auditSpeed === 1 ? 4 : 1;
     speedBtn.textContent = `Speed ${auditSpeed}×`;
@@ -689,185 +1125,6 @@
       const y = ((m.y * H - time * 5) % H + H) % H;
       ctx.fillRect(x, y, m.s, m.s);
     }
-  }
-
-  // Rocky ceiling piece that hangs from the surface (all kinds share this shape)
-  function drawOverhang(c) {
-    const x = c.x, y = c.top;
-    ctx.fillStyle = "#33465c";
-    ctx.beginPath();
-    ctx.moveTo(x - 6, 0);
-    ctx.lineTo(x + COL_W + 6, 0);
-    ctx.lineTo(x + COL_W + 4, y - 22);
-    ctx.lineTo(x + COL_W - 6, y - 4);
-    ctx.lineTo(x + COL_W - 18, y - 16);
-    ctx.lineTo(x + COL_W / 2 + 2, y);
-    ctx.lineTo(x + 22, y - 18);
-    ctx.lineTo(x + 10, y - 2);
-    ctx.lineTo(x - 4, y - 20);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = "#24364a";
-    ctx.fillRect(x + COL_W - 14, 0, 18, y - 24);
-    ctx.fillStyle = "rgba(255,255,255,0.08)";
-    ctx.fillRect(x + 6, 0, 8, y - 26);
-
-    // Decorations by kind
-    if (c.kind === "coral") {
-      // Hanging sea fans
-      ctx.strokeStyle = "#ff8fa3";
-      ctx.lineWidth = 3;
-      ctx.lineCap = "round";
-      for (let i = 0; i < 3; i++) {
-        const fx = x + 14 + i * 21, fy = y - 24;
-        ctx.beginPath();
-        ctx.moveTo(fx, fy - 6);
-        ctx.lineTo(fx - 5, fy + 6);
-        ctx.moveTo(fx, fy - 6);
-        ctx.lineTo(fx + 5, fy + 8);
-        ctx.stroke();
-      }
-    } else if (c.kind === "wreck") {
-      // Rusty chain stuck in the rock
-      ctx.strokeStyle = "#a8643a";
-      ctx.lineWidth = 3;
-      for (let cy = 8; cy < y - 30; cy += 12) {
-        ctx.beginPath();
-        ctx.ellipse(x + COL_W / 2, cy, 4, 6, 0, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    } else {
-      // Kelp draped over the edge
-      ctx.strokeStyle = "#3f9d4f";
-      ctx.lineWidth = 5;
-      ctx.lineCap = "round";
-      for (let i = 0; i < 2; i++) {
-        const kx = x + 16 + i * 36;
-        ctx.beginPath();
-        ctx.moveTo(kx, y - 28);
-        ctx.quadraticCurveTo(kx + Math.sin(time * 2 + i) * 5, y - 18, kx + 2, y - 10);
-        ctx.stroke();
-      }
-    }
-  }
-
-  function drawCoral(c) {
-    const x = c.x, by = c.top + GAP, gy = H - FLOOR;
-    ctx.fillStyle = "#a83f63";
-    ctx.fillRect(x + 6, by + 16, COL_W - 12, gy - by - 16);
-    const colors = ["#ff7f6e", "#ffb26b", "#d65a8a", "#b069c9"];
-    for (let yy = by + 22, i = 0; yy < gy; yy += 18, i++) {
-      ctx.fillStyle = colors[i % 4];
-      ctx.beginPath();
-      ctx.arc(x + 8, yy, 10, 0, Math.PI * 2);
-      ctx.arc(x + COL_W - 8, yy + 9, 10, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // Branching coral on top, swaying a little
-    const sway = Math.sin(time * 1.5 + c.seed) * 2;
-    ctx.strokeStyle = "#ff7f6e";
-    ctx.lineWidth = 9;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(x + COL_W / 2, by + 30);
-    ctx.lineTo(x + 12 + sway, by + 6);
-    ctx.moveTo(x + COL_W / 2, by + 30);
-    ctx.lineTo(x + COL_W / 2 + sway, by + 4);
-    ctx.moveTo(x + COL_W / 2, by + 30);
-    ctx.lineTo(x + COL_W - 12 + sway, by + 8);
-    ctx.stroke();
-    // Tiny polyps
-    ctx.fillStyle = "#ffe0d6";
-    for (let i = 0; i < 6; i++) {
-      ctx.fillRect(x + 14 + ((i * 37 + c.seed) % (COL_W - 28)), by + 40 + ((i * 53) % Math.max(20, gy - by - 50)), 3, 3);
-    }
-  }
-
-  function drawWreck(c) {
-    const x = c.x, by = c.top + GAP, gy = H - FLOOR;
-    // Broken hull with a jagged top edge
-    ctx.fillStyle = "#6b4a2f";
-    ctx.beginPath();
-    ctx.moveTo(x - 4, gy);
-    ctx.lineTo(x - 4, by + 10);
-    ctx.lineTo(x + 14, by);
-    ctx.lineTo(x + 26, by + 14);
-    ctx.lineTo(x + 42, by + 2);
-    ctx.lineTo(x + 56, by + 12);
-    ctx.lineTo(x + COL_W + 4, by + 4);
-    ctx.lineTo(x + COL_W + 4, gy);
-    ctx.closePath();
-    ctx.fill();
-    // Planks
-    ctx.save();
-    ctx.clip();
-    ctx.strokeStyle = "#4a321f";
-    ctx.lineWidth = 2;
-    for (let yy = by + 16; yy < gy; yy += 14) {
-      ctx.beginPath();
-      ctx.moveTo(x - 4, yy);
-      ctx.lineTo(x + COL_W + 4, yy);
-      ctx.stroke();
-    }
-    ctx.fillStyle = "rgba(0,0,0,0.25)";
-    ctx.fillRect(x + COL_W - 10, by, 14, gy - by);
-    ctx.restore();
-    // Portholes
-    for (let i = 0; i < 2; i++) {
-      const py = by + 40 + i * 60;
-      if (py > gy - 14) break;
-      ctx.fillStyle = "#c9a227";
-      ctx.beginPath();
-      ctx.arc(x + COL_W / 2, py, 10, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#0b2236";
-      ctx.beginPath();
-      ctx.arc(x + COL_W / 2, py, 6, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // Moss
-    ctx.fillStyle = "#4f8a4a";
-    ctx.beginPath();
-    ctx.arc(x + 8, by + 14, 6, 0, Math.PI * 2);
-    ctx.arc(x + 44, by + 8, 5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  function drawRocks(c) {
-    const x = c.x, by = c.top + GAP, gy = H - FLOOR;
-    const tones = ["#56677a", "#46566a", "#61748a"];
-    let yy = by, i = 0;
-    while (yy < gy) {
-      const h = Math.min(38, gy - yy);
-      ctx.fillStyle = tones[i % 3];
-      ctx.beginPath();
-      ctx.roundRect(x + (i % 2 ? 0 : 4), yy, COL_W - 4, h + 6, 14);
-      ctx.fill();
-      ctx.fillStyle = "rgba(255,255,255,0.1)";
-      ctx.fillRect(x + 12, yy + 6, 10, 4);
-      yy += h;
-      i++;
-    }
-    // Starfish
-    const sx = x + COL_W / 2, sy = by + 50;
-    if (sy < gy - 10) {
-      ctx.fillStyle = "#ff9a3c";
-      ctx.beginPath();
-      for (let k = 0; k < 10; k++) {
-        const a = -Math.PI / 2 + (k * Math.PI) / 5;
-        const r = k % 2 ? 4 : 10;
-        ctx.lineTo(sx + Math.cos(a) * r, sy + Math.sin(a) * r);
-      }
-      ctx.fill();
-    }
-    // Kelp along the side
-    ctx.strokeStyle = "#3f9d4f";
-    ctx.lineWidth = 4;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(x + 4, gy);
-    ctx.quadraticCurveTo(x - 2 + Math.sin(time * 2 + c.seed) * 4, (by + gy) / 2, x + 4, by + 12);
-    ctx.stroke();
   }
 
   function drawHazard(h) {
@@ -1140,14 +1397,17 @@
   function draw() {
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     drawWater();
-    for (const c of cols) {
-      drawOverhang(c);
-      if (c.kind === "coral") drawCoral(c);
-      else if (c.kind === "wreck") drawWreck(c);
-      else drawRocks(c);
+    for (const g of cols) {
+      ctx.save(); ctx.translate(g.x + g.tox, 0); g.tp.draw(); ctx.restore();
+      ctx.save(); ctx.translate(g.x + g.box, 0); g.bp.draw(); ctx.restore();
     }
     drawFloor();
     for (const h of hazards) drawHazard(h);
+    if (audit && showBoxes) {
+      for (const g of cols) { drawPrims(g.tp.prims, g.x + g.tox); drawPrims(g.bp.prims, g.x + g.box); }
+      drawPrims(hazards.map(h => E(h.x, h.y, h.rx, h.ry)), 0);
+      drawPrims([C(diver.x + 2, diver.y, DIVER_R - 3)], 0);
+    }
     drawBubbles();
     if (audit && state === "play" && aiPath.length) {
       ctx.fillStyle = lastPlan && lastPlan.ok ? "rgba(155, 231, 255, 0.8)" : "rgba(255, 93, 115, 0.9)";
