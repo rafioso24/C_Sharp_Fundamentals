@@ -1,14 +1,12 @@
-<title>Flappy Bird</title>
+<title>Flappy Diver</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bungee&display=swap">
 <style>
-  /* Layout: one full-screen canvas, game world scaled to fit; single dusk look on purpose */
+  /* Layout: one full-screen canvas, game world scaled to fit; single deep-sea look on purpose */
   :root {
-    --bg: #1b1f3a;
-    --sky-top: #2b3a78;
-    --sky-low: #f2a65a;
-    --pipe: #3fa34d;
-    --pipe-dark: #2a7234;
-    --ink: #fff8e7;
+    --bg: #062a4a;
+    --water: #0b4a7a;
+    --foam: #9be7ff;
+    --ink: #f4fbff;
     --display: "Bungee", "Arial Black", Impact, sans-serif;
     color-scheme: dark;
   }
@@ -28,10 +26,10 @@
     height: 100%;
     cursor: pointer;
   }
-  #game:focus-visible { outline: 3px solid var(--sky-low); outline-offset: -3px; }
+  #game:focus-visible { outline: 3px solid var(--foam); outline-offset: -3px; }
 </style>
 
-<canvas id="game" tabindex="0" aria-label="Flappy Bird game. Tap, click, or press space to flap."></canvas>
+<canvas id="game" tabindex="0" aria-label="Flappy Diver game. Tap, click, or press space to swim up."></canvas>
 
 <script>
 (() => {
@@ -42,50 +40,98 @@
   const H = 640;
   let W = 360, scale = 1;
 
-  const GRAVITY = 1500;   // units per second squared
-  const FLAP = -470;      // upward speed on tap
-  const SPEED = 150;      // pipe scroll speed
-  const GAP = 165;        // opening between pipes
-  const PIPE_W = 62;
-  const SPACING = 220;    // distance between pipes
-  const GROUND = 80;      // ground height
-  const BIRD_R = 15;
+  const GRAVITY = 1250;   // sinking pull, units per second squared
+  const KICK = -430;      // upward speed on tap
+  const SPEED = 145;      // scroll speed
+  const GAP = 170;        // opening between top and bottom obstacles
+  const COL_W = 70;       // obstacle width
+  const SPACING = 250;    // distance between obstacle columns
+  const FLOOR = 80;       // sea floor height
+  const DIVER_R = 13;
 
-  let state, bird, pipes, score, best, groundX, flashT, time;
+  const KINDS = ["coral", "wreck", "rocks"];
+  const HAZARDS = ["jelly", "shark", "puffer", "mine", "barrel"];
 
-  try { best = Number(localStorage.getItem("flappy-best")) || 0; } catch (e) { best = 0; }
+  let state, diver, cols, hazards, bubbles, score, best, floorX, overT, time, bubbleT;
+
+  try { best = Number(localStorage.getItem("flappy-diver-best")) || 0; } catch (e) { best = 0; }
+
+  // Fixed background decor, made once
+  const motes = Array.from({ length: 40 }, () => ({ x: Math.random(), y: Math.random(), s: 1 + Math.random() * 2 }));
+  const school = Array.from({ length: 7 }, (_, i) => ({ dx: (i % 4) * 16, dy: Math.floor(i / 4) * 12 + (i % 2) * 5 }));
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
-    const cw = canvas.clientWidth, ch = canvas.clientHeight;
-    canvas.width = Math.round(cw * dpr);
-    canvas.height = Math.round(ch * dpr);
+    canvas.width = Math.round(canvas.clientWidth * dpr);
+    canvas.height = Math.round(canvas.clientHeight * dpr);
     scale = canvas.height / H;
     W = canvas.width / scale;
   }
 
   function reset() {
     state = "ready";
-    bird = { x: Math.min(W * 0.3, 120), y: H * 0.42, vy: 0, rot: 0 };
-    pipes = [];
+    diver = { x: Math.min(W * 0.3, 120), y: H * 0.42, vy: 0, rot: 0 };
+    cols = [];
+    hazards = [];
+    bubbles = [];
     score = 0;
-    groundX = 0;
-    flashT = 0;
+    floorX = 0;
+    overT = 0;
+    bubbleT = 0;
   }
 
-  function addPipe(x) {
-    const minTop = 60, maxTop = H - GROUND - GAP - 60;
-    pipes.push({ x, top: minTop + Math.random() * (maxTop - minTop), passed: false });
+  function addCol(x) {
+    const minTop = 70, maxTop = H - FLOOR - GAP - 70;
+    const prev = cols[cols.length - 1];
+    const col = {
+      x,
+      top: minTop + Math.random() * (maxTop - minTop),
+      kind: KINDS[Math.floor(Math.random() * KINDS.length)],
+      seed: Math.random() * 1000,
+      passed: false,
+    };
+    cols.push(col);
+    // Sometimes put a sea creature or hazard in the open water between columns
+    if (prev && Math.random() < 0.5 + Math.min(0.4, score * 0.03)) {
+      addHazard((prev.x + x) / 2 + COL_W / 2);
+    }
   }
 
-  function flap() {
+  function addHazard(x) {
+    const type = HAZARDS[Math.floor(Math.random() * HAZARDS.length)];
+    const h = { type, x, phase: Math.random() * 6.28, rot: 0 };
+    const lo = 90, hi = H - FLOOR - 90;
+    h.baseY = lo + Math.random() * (hi - lo);
+    if (type === "jelly") { h.rx = 16; h.ry = 18; h.amp = 35; }
+    if (type === "shark") { h.rx = 34; h.ry = 11; h.amp = 12; }
+    if (type === "puffer") { h.rx = h.ry = 14; h.amp = 18; }
+    if (type === "mine") { h.rx = h.ry = 15; h.amp = 20; }
+    if (type === "barrel") { h.rx = 13; h.ry = 17; h.amp = 0; h.baseY = 60 + Math.random() * 160; }
+    h.y = h.baseY;
+    hazards.push(h);
+  }
+
+  function puff(n) {
+    for (let i = 0; i < n; i++) {
+      bubbles.push({
+        x: diver.x + 20 + Math.random() * 6,
+        y: diver.y - 2 + Math.random() * 6,
+        r: 2 + Math.random() * 3,
+        vy: -50 - Math.random() * 40,
+        w: Math.random() * 6.28,
+      });
+    }
+  }
+
+  function kick() {
     if (state === "ready") {
       state = "play";
-      addPipe(W + 40);
+      addCol(W + 40);
     }
     if (state === "play") {
-      bird.vy = FLAP;
-    } else if (state === "over" && time - flashT > 0.6) {
+      diver.vy = KICK;
+      puff(3);
+    } else if (state === "over" && time - overT > 0.6) {
       reset();
     }
   }
@@ -93,187 +139,609 @@
   function die() {
     if (state !== "play") return;
     state = "over";
-    flashT = time;
+    overT = time;
+    puff(8);
     if (score > best) {
       best = score;
-      try { localStorage.setItem("flappy-best", String(best)); } catch (e) {}
+      try { localStorage.setItem("flappy-diver-best", String(best)); } catch (e) {}
     }
+  }
+
+  // Ellipse (hazard) vs. circle (diver) hit test
+  function hitsEllipse(h) {
+    const dx = diver.x + 2 - h.x, dy = diver.y - h.y;
+    const a = h.rx + DIVER_R - 3, b = h.ry + DIVER_R - 3;
+    return (dx * dx) / (a * a) + (dy * dy) / (b * b) < 1;
   }
 
   function update(dt) {
-    if (state === "ready") {
-      bird.y = H * 0.42 + Math.sin(time * 5) * 8;
-    }
-    if (state !== "over") groundX = (groundX - SPEED * dt) % 24;
+    if (state === "ready") diver.y = H * 0.42 + Math.sin(time * 3) * 10;
+    if (state !== "over") floorX = (floorX - SPEED * dt) % 48;
 
     if (state === "play" || state === "over") {
-      bird.vy += GRAVITY * dt;
-      bird.y += bird.vy * dt;
-      bird.rot = Math.max(-0.5, Math.min(1.4, bird.vy / 500));
-      if (bird.y + BIRD_R >= H - GROUND) {
-        bird.y = H - GROUND - BIRD_R;
-        bird.vy = 0;
+      diver.vy += GRAVITY * dt;
+      diver.y += diver.vy * dt;
+      diver.rot = Math.max(-0.5, Math.min(1.2, diver.vy / 550));
+      if (diver.y + DIVER_R >= H - FLOOR) {
+        diver.y = H - FLOOR - DIVER_R;
+        diver.vy = 0;
         die();
       }
-      if (bird.y - BIRD_R < 0) { bird.y = BIRD_R; bird.vy = 0; }
+      if (diver.y - DIVER_R < 0) { diver.y = DIVER_R; diver.vy = 0; }
     }
 
     if (state === "play") {
-      for (const p of pipes) {
-        p.x -= SPEED * dt;
-        if (!p.passed && p.x + PIPE_W < bird.x) { p.passed = true; score++; }
-        // Circle vs. rectangle hit test (a bit forgiving)
-        const r = BIRD_R - 3;
-        const nx = Math.max(p.x, Math.min(bird.x, p.x + PIPE_W));
-        if (Math.abs(nx - bird.x) < r && (bird.y - r < p.top || bird.y + r > p.top + GAP)) die();
+      const r = DIVER_R - 3, cx = diver.x + 2;
+      for (const c of cols) {
+        c.x -= SPEED * dt;
+        if (!c.passed && c.x + COL_W < diver.x) { c.passed = true; score++; }
+        const nx = Math.max(c.x, Math.min(cx, c.x + COL_W));
+        if (Math.abs(nx - cx) < r && (diver.y - r < c.top || diver.y + r > c.top + GAP)) die();
       }
-      const last = pipes[pipes.length - 1];
-      if (last && last.x < W - SPACING) addPipe(last.x + SPACING);
-      while (pipes.length && pipes[0].x < -PIPE_W - 10) pipes.shift();
+      for (const h of hazards) {
+        h.x -= SPEED * dt;
+        if (h.type === "barrel") { h.baseY += 30 * dt; h.rot += 0.8 * dt; }
+        if (h.type === "puffer") h.rx = h.ry = 11 + 6 * (0.5 + 0.5 * Math.sin(time * 2.5 + h.phase));
+        h.y = h.baseY + Math.sin(time * 2 + h.phase) * h.amp;
+        if (hitsEllipse(h)) die();
+      }
+      const last = cols[cols.length - 1];
+      if (last && last.x < W - SPACING) addCol(last.x + SPACING);
+      while (cols.length && cols[0].x < -COL_W - 20) cols.shift();
+      hazards = hazards.filter(h => h.x > -80 && h.baseY < H);
+
+      bubbleT += dt;
+      if (bubbleT > 0.45) { bubbleT = 0; puff(1); }
     }
+
+    for (const b of bubbles) {
+      b.y += b.vy * dt;
+      b.x += Math.sin(time * 4 + b.w) * 12 * dt - (state === "over" ? 0 : SPEED * 0.4 * dt);
+    }
+    bubbles = bubbles.filter(b => b.y > -10);
   }
 
-  function drawSky() {
+  /* ---------- Drawing ---------- */
+
+  function drawWater() {
     const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, "#2b3a78");
-    g.addColorStop(0.65, "#c86f7a");
-    g.addColorStop(1, "#f2a65a");
+    g.addColorStop(0, "#35b9d4");
+    g.addColorStop(0.45, "#0f5f92");
+    g.addColorStop(1, "#06294a");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
-    // Sun
-    ctx.fillStyle = "rgba(255, 220, 150, 0.85)";
-    ctx.beginPath();
-    ctx.arc(W * 0.72, H * 0.58, 46, 0, Math.PI * 2);
-    ctx.fill();
-    // Distant hills, slow parallax
-    ctx.fillStyle = "#5b3f6e";
-    const off = (time * 12) % 160;
-    ctx.beginPath();
-    ctx.moveTo(0, H - GROUND);
-    for (let x = -off; x <= W + 160; x += 160) {
-      ctx.quadraticCurveTo(x + 40, H - GROUND - 70, x + 80, H - GROUND - 20);
-      ctx.quadraticCurveTo(x + 120, H - GROUND + 10, x + 160, H - GROUND - 10);
-    }
-    ctx.lineTo(W, H - GROUND);
-    ctx.fill();
-  }
 
-  function drawPipe(x, y, h, capAtBottom) {
-    ctx.fillStyle = "#3fa34d";
-    ctx.fillRect(x, y, PIPE_W, h);
-    ctx.fillStyle = "#2a7234";
-    ctx.fillRect(x + PIPE_W - 12, y, 12, h);
-    ctx.fillStyle = "rgba(255,255,255,0.18)";
-    ctx.fillRect(x + 8, y, 6, h);
-    // Cap
-    const cy = capAtBottom ? y + h - 24 : y;
-    ctx.fillStyle = "#4cbc5b";
-    ctx.fillRect(x - 5, cy, PIPE_W + 10, 24);
-    ctx.fillStyle = "#2a7234";
-    ctx.fillRect(x + PIPE_W - 7, cy, 12, 24);
-    ctx.strokeStyle = "#1c4d23";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x - 5, cy, PIPE_W + 10, 24);
-  }
-
-  function drawGround() {
-    const y = H - GROUND;
-    ctx.fillStyle = "#d9b26a";
-    ctx.fillRect(0, y, W, GROUND);
-    ctx.fillStyle = "#6fbf4a";
-    ctx.fillRect(0, y, W, 14);
-    ctx.fillStyle = "#58a23a";
-    for (let x = groundX; x < W; x += 24) {
+    // Sun rays from the surface
+    ctx.save();
+    ctx.globalAlpha = 0.09;
+    ctx.fillStyle = "#e9fbff";
+    for (let i = 0; i < 5; i++) {
+      const x = ((i * 130 - time * 6) % (W + 200)) - 60 + Math.sin(time * 0.6 + i) * 15;
       ctx.beginPath();
-      ctx.moveTo(x, y + 14);
-      ctx.lineTo(x + 12, y + 14);
-      ctx.lineTo(x + 6, y + 22);
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x + 50, 0);
+      ctx.lineTo(x + 170, H * 0.8);
+      ctx.lineTo(x + 70, H * 0.8);
       ctx.fill();
     }
-    ctx.fillStyle = "#3c2f1e";
-    ctx.fillRect(0, y, W, 3);
+    ctx.restore();
+
+    // Far reef silhouette, slow parallax
+    ctx.fillStyle = "#0b3d63";
+    const off = (time * 10) % 200;
+    ctx.beginPath();
+    ctx.moveTo(0, H - FLOOR);
+    for (let x = -off; x <= W + 200; x += 200) {
+      ctx.quadraticCurveTo(x + 50, H - FLOOR - 110, x + 100, H - FLOOR - 40);
+      ctx.quadraticCurveTo(x + 150, H - FLOOR - 80, x + 200, H - FLOOR - 20);
+    }
+    ctx.lineTo(W, H - FLOOR);
+    ctx.fill();
+
+    // Distant fish school
+    ctx.fillStyle = "rgba(10, 50, 85, 0.6)";
+    const sx = W + 80 - ((time * 25) % (W + 200));
+    const sy = H * 0.3 + Math.sin(time * 0.8) * 20;
+    for (const f of school) {
+      const fx = sx + f.dx, fy = sy + f.dy;
+      ctx.beginPath();
+      ctx.ellipse(fx, fy, 6, 2.5, 0, 0, Math.PI * 2);
+      ctx.moveTo(fx + 5, fy);
+      ctx.lineTo(fx + 10, fy - 3);
+      ctx.lineTo(fx + 10, fy + 3);
+      ctx.fill();
+    }
+
+    // Drifting specks
+    ctx.fillStyle = "rgba(220, 245, 255, 0.35)";
+    for (const m of motes) {
+      const x = ((m.x * W - time * 8 * m.s) % W + W) % W;
+      const y = ((m.y * H - time * 5) % H + H) % H;
+      ctx.fillRect(x, y, m.s, m.s);
+    }
   }
 
-  function drawBird() {
-    ctx.save();
-    ctx.translate(bird.x, bird.y);
-    ctx.rotate(bird.rot);
-    // Body
-    ctx.fillStyle = "#ffd23f";
-    ctx.strokeStyle = "#3c2f1e";
-    ctx.lineWidth = 2.5;
+  // Rocky ceiling piece that hangs from the surface (all kinds share this shape)
+  function drawOverhang(c) {
+    const x = c.x, y = c.top;
+    ctx.fillStyle = "#33465c";
     ctx.beginPath();
-    ctx.ellipse(0, 0, BIRD_R + 3, BIRD_R, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    // Wing flaps up and down
-    const wing = state === "over" ? 0 : Math.sin(time * 22) * 5;
-    ctx.fillStyle = "#fff3b0";
-    ctx.beginPath();
-    ctx.ellipse(-6, 3 + wing, 8, 5, -0.3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    // Eye
-    ctx.fillStyle = "#fff";
-    ctx.beginPath();
-    ctx.arc(8, -5, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = "#3c2f1e";
-    ctx.beginPath();
-    ctx.arc(10, -5, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-    // Beak
-    ctx.fillStyle = "#f2774a";
-    ctx.beginPath();
-    ctx.moveTo(14, 1);
-    ctx.lineTo(25, 4);
-    ctx.lineTo(14, 9);
+    ctx.moveTo(x - 6, 0);
+    ctx.lineTo(x + COL_W + 6, 0);
+    ctx.lineTo(x + COL_W + 4, y - 22);
+    ctx.lineTo(x + COL_W - 6, y - 4);
+    ctx.lineTo(x + COL_W - 18, y - 16);
+    ctx.lineTo(x + COL_W / 2 + 2, y);
+    ctx.lineTo(x + 22, y - 18);
+    ctx.lineTo(x + 10, y - 2);
+    ctx.lineTo(x - 4, y - 20);
     ctx.closePath();
     ctx.fill();
+    ctx.fillStyle = "#24364a";
+    ctx.fillRect(x + COL_W - 14, 0, 18, y - 24);
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    ctx.fillRect(x + 6, 0, 8, y - 26);
+
+    // Decorations by kind
+    if (c.kind === "coral") {
+      // Hanging sea fans
+      ctx.strokeStyle = "#ff8fa3";
+      ctx.lineWidth = 3;
+      ctx.lineCap = "round";
+      for (let i = 0; i < 3; i++) {
+        const fx = x + 14 + i * 21, fy = y - 24;
+        ctx.beginPath();
+        ctx.moveTo(fx, fy - 6);
+        ctx.lineTo(fx - 5, fy + 6);
+        ctx.moveTo(fx, fy - 6);
+        ctx.lineTo(fx + 5, fy + 8);
+        ctx.stroke();
+      }
+    } else if (c.kind === "wreck") {
+      // Rusty chain stuck in the rock
+      ctx.strokeStyle = "#a8643a";
+      ctx.lineWidth = 3;
+      for (let cy = 8; cy < y - 30; cy += 12) {
+        ctx.beginPath();
+        ctx.ellipse(x + COL_W / 2, cy, 4, 6, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    } else {
+      // Kelp draped over the edge
+      ctx.strokeStyle = "#3f9d4f";
+      ctx.lineWidth = 5;
+      ctx.lineCap = "round";
+      for (let i = 0; i < 2; i++) {
+        const kx = x + 16 + i * 36;
+        ctx.beginPath();
+        ctx.moveTo(kx, y - 28);
+        ctx.quadraticCurveTo(kx + Math.sin(time * 2 + i) * 5, y - 18, kx + 2, y - 10);
+        ctx.stroke();
+      }
+    }
+  }
+
+  function drawCoral(c) {
+    const x = c.x, by = c.top + GAP, gy = H - FLOOR;
+    ctx.fillStyle = "#a83f63";
+    ctx.fillRect(x + 6, by + 16, COL_W - 12, gy - by - 16);
+    const colors = ["#ff7f6e", "#ffb26b", "#d65a8a", "#b069c9"];
+    for (let yy = by + 22, i = 0; yy < gy; yy += 18, i++) {
+      ctx.fillStyle = colors[i % 4];
+      ctx.beginPath();
+      ctx.arc(x + 8, yy, 10, 0, Math.PI * 2);
+      ctx.arc(x + COL_W - 8, yy + 9, 10, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Branching coral on top, swaying a little
+    const sway = Math.sin(time * 1.5 + c.seed) * 2;
+    ctx.strokeStyle = "#ff7f6e";
+    ctx.lineWidth = 9;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x + COL_W / 2, by + 30);
+    ctx.lineTo(x + 12 + sway, by + 6);
+    ctx.moveTo(x + COL_W / 2, by + 30);
+    ctx.lineTo(x + COL_W / 2 + sway, by + 4);
+    ctx.moveTo(x + COL_W / 2, by + 30);
+    ctx.lineTo(x + COL_W - 12 + sway, by + 8);
     ctx.stroke();
+    // Tiny polyps
+    ctx.fillStyle = "#ffe0d6";
+    for (let i = 0; i < 6; i++) {
+      ctx.fillRect(x + 14 + ((i * 37 + c.seed) % (COL_W - 28)), by + 40 + ((i * 53) % Math.max(20, gy - by - 50)), 3, 3);
+    }
+  }
+
+  function drawWreck(c) {
+    const x = c.x, by = c.top + GAP, gy = H - FLOOR;
+    // Broken hull with a jagged top edge
+    ctx.fillStyle = "#6b4a2f";
+    ctx.beginPath();
+    ctx.moveTo(x - 4, gy);
+    ctx.lineTo(x - 4, by + 10);
+    ctx.lineTo(x + 14, by);
+    ctx.lineTo(x + 26, by + 14);
+    ctx.lineTo(x + 42, by + 2);
+    ctx.lineTo(x + 56, by + 12);
+    ctx.lineTo(x + COL_W + 4, by + 4);
+    ctx.lineTo(x + COL_W + 4, gy);
+    ctx.closePath();
+    ctx.fill();
+    // Planks
+    ctx.save();
+    ctx.clip();
+    ctx.strokeStyle = "#4a321f";
+    ctx.lineWidth = 2;
+    for (let yy = by + 16; yy < gy; yy += 14) {
+      ctx.beginPath();
+      ctx.moveTo(x - 4, yy);
+      ctx.lineTo(x + COL_W + 4, yy);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(x + COL_W - 10, by, 14, gy - by);
+    ctx.restore();
+    // Portholes
+    for (let i = 0; i < 2; i++) {
+      const py = by + 40 + i * 60;
+      if (py > gy - 14) break;
+      ctx.fillStyle = "#c9a227";
+      ctx.beginPath();
+      ctx.arc(x + COL_W / 2, py, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#0b2236";
+      ctx.beginPath();
+      ctx.arc(x + COL_W / 2, py, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Moss
+    ctx.fillStyle = "#4f8a4a";
+    ctx.beginPath();
+    ctx.arc(x + 8, by + 14, 6, 0, Math.PI * 2);
+    ctx.arc(x + 44, by + 8, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawRocks(c) {
+    const x = c.x, by = c.top + GAP, gy = H - FLOOR;
+    const tones = ["#56677a", "#46566a", "#61748a"];
+    let yy = by, i = 0;
+    while (yy < gy) {
+      const h = Math.min(38, gy - yy);
+      ctx.fillStyle = tones[i % 3];
+      ctx.beginPath();
+      ctx.roundRect(x + (i % 2 ? 0 : 4), yy, COL_W - 4, h + 6, 14);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.1)";
+      ctx.fillRect(x + 12, yy + 6, 10, 4);
+      yy += h;
+      i++;
+    }
+    // Starfish
+    const sx = x + COL_W / 2, sy = by + 50;
+    if (sy < gy - 10) {
+      ctx.fillStyle = "#ff9a3c";
+      ctx.beginPath();
+      for (let k = 0; k < 10; k++) {
+        const a = -Math.PI / 2 + (k * Math.PI) / 5;
+        const r = k % 2 ? 4 : 10;
+        ctx.lineTo(sx + Math.cos(a) * r, sy + Math.sin(a) * r);
+      }
+      ctx.fill();
+    }
+    // Kelp along the side
+    ctx.strokeStyle = "#3f9d4f";
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x + 4, gy);
+    ctx.quadraticCurveTo(x - 2 + Math.sin(time * 2 + c.seed) * 4, (by + gy) / 2, x + 4, by + 12);
+    ctx.stroke();
+  }
+
+  function drawHazard(h) {
+    ctx.save();
+    ctx.translate(h.x, h.y);
+    if (h.type === "jelly") {
+      ctx.strokeStyle = "rgba(255, 170, 230, 0.8)";
+      ctx.lineWidth = 2;
+      for (let i = -2; i <= 2; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * 5, 4);
+        for (let t = 0; t <= 22; t += 4) ctx.lineTo(i * 5 + Math.sin(time * 5 + t * 0.4 + i) * 3, 4 + t);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "rgba(255, 140, 220, 0.85)";
+      ctx.beginPath();
+      ctx.ellipse(0, 2, 17, 17 + Math.sin(time * 4 + h.phase) * 2, 0, Math.PI, 0);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.45)";
+      ctx.beginPath();
+      ctx.ellipse(-5, -7, 4, 6, -0.4, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (h.type === "shark") {
+      const tail = Math.sin(time * 8) * 5;
+      ctx.fillStyle = "#7d8fa3";
+      // Tail
+      ctx.beginPath();
+      ctx.moveTo(28, 0);
+      ctx.lineTo(46, -12 + tail);
+      ctx.lineTo(42, 0);
+      ctx.lineTo(46, 12 + tail);
+      ctx.closePath();
+      ctx.fill();
+      // Dorsal fin
+      ctx.beginPath();
+      ctx.moveTo(-4, -9);
+      ctx.lineTo(8, -24);
+      ctx.lineTo(12, -8);
+      ctx.fill();
+      // Body
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 36, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#e6eef5";
+      ctx.beginPath();
+      ctx.ellipse(-4, 5, 28, 6, 0, 0, Math.PI);
+      ctx.fill();
+      // Eye, gills, teeth
+      ctx.fillStyle = "#0b1624";
+      ctx.beginPath();
+      ctx.arc(-24, -3, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#56677a";
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.moveTo(-12 + i * 4, -5);
+        ctx.lineTo(-14 + i * 4, 3);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.moveTo(-34, 3);
+      ctx.lineTo(-24, 5);
+      ctx.stroke();
+    } else if (h.type === "puffer") {
+      const r = h.rx;
+      ctx.strokeStyle = "#8a5a12";
+      ctx.lineWidth = 2;
+      for (let k = 0; k < 12; k++) {
+        const a = (k * Math.PI) / 6;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+        ctx.lineTo(Math.cos(a) * (r + 5), Math.sin(a) * (r + 5));
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#ffcf4a";
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#fff4cf";
+      ctx.beginPath();
+      ctx.arc(0, r * 0.35, r * 0.65, 0, Math.PI);
+      ctx.fill();
+      ctx.fillStyle = "#0b1624";
+      ctx.beginPath();
+      ctx.arc(-r * 0.45, -r * 0.25, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#e5733a";
+      ctx.beginPath();
+      ctx.moveTo(r - 2, 0);
+      ctx.lineTo(r + 9, -7);
+      ctx.lineTo(r + 9, 7);
+      ctx.fill();
+    } else if (h.type === "mine") {
+      // Anchor cable down out of view
+      ctx.strokeStyle = "rgba(30, 40, 50, 0.6)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, 15);
+      ctx.lineTo(0, 40);
+      ctx.stroke();
+      ctx.strokeStyle = "#2a323c";
+      ctx.lineWidth = 4;
+      ctx.lineCap = "round";
+      for (let k = 0; k < 8; k++) {
+        const a = (k * Math.PI) / 4;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * 12, Math.sin(a) * 12);
+        ctx.lineTo(Math.cos(a) * 20, Math.sin(a) * 20);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#3b4550";
+      ctx.beginPath();
+      ctx.arc(0, 0, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = Math.sin(time * 6 + h.phase) > 0 ? "#ff3b3b" : "#7a1d1d";
+      ctx.beginPath();
+      ctx.arc(0, 0, 4, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (h.type === "barrel") {
+      ctx.rotate(h.rot);
+      ctx.fillStyle = "#d8a21c";
+      ctx.beginPath();
+      ctx.roundRect(-13, -17, 26, 34, 5);
+      ctx.fill();
+      ctx.fillStyle = "#2a2a2a";
+      ctx.fillRect(-13, -9, 26, 3);
+      ctx.fillRect(-13, 6, 26, 3);
+      // Hazard symbol
+      ctx.fillStyle = "#2a2a2a";
+      ctx.beginPath();
+      ctx.moveTo(0, -5);
+      ctx.lineTo(6, 4);
+      ctx.lineTo(-6, 4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#7ddc4a";
+      ctx.beginPath();
+      ctx.arc(10, 15, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 
-  function text(str, x, y, size, align = "center") {
+  function drawFloor() {
+    const y = H - FLOOR;
+    ctx.fillStyle = "#d9bf86";
+    ctx.fillRect(0, y, W, FLOOR);
+    ctx.fillStyle = "#c4a86c";
+    ctx.fillRect(0, y, W, 6);
+    for (let x = floorX; x < W + 48; x += 48) {
+      // Sand ripples
+      ctx.strokeStyle = "#bfa166";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, y + 30);
+      ctx.quadraticCurveTo(x + 12, y + 24, x + 24, y + 30);
+      ctx.stroke();
+      // Shell
+      ctx.fillStyle = "#f6e1d3";
+      ctx.beginPath();
+      ctx.arc(x + 34, y + 52, 5, Math.PI, 0);
+      ctx.fill();
+      // Seaweed tuft
+      ctx.strokeStyle = "#3f9d4f";
+      ctx.lineWidth = 3;
+      ctx.lineCap = "round";
+      const s = Math.sin(time * 2 + x * 0.05) * 3;
+      ctx.beginPath();
+      ctx.moveTo(x + 10, y + 2);
+      ctx.lineTo(x + 6 + s, y - 12);
+      ctx.moveTo(x + 14, y + 2);
+      ctx.lineTo(x + 16 + s, y - 16);
+      ctx.stroke();
+    }
+  }
+
+  function drawDiver() {
+    ctx.save();
+    ctx.translate(diver.x, diver.y);
+    ctx.rotate(diver.rot);
+    const k = state === "over" ? 0 : Math.sin(time * 14) * 5;
+    ctx.lineJoin = "round";
+    // Fins
+    ctx.fillStyle = "#ffcc33";
+    ctx.beginPath();
+    ctx.moveTo(-20, -2);
+    ctx.lineTo(-36, -9 + k);
+    ctx.lineTo(-34, -1 + k);
+    ctx.closePath();
+    ctx.moveTo(-20, 3);
+    ctx.lineTo(-35, 2 - k);
+    ctx.lineTo(-33, 10 - k);
+    ctx.closePath();
+    ctx.fill();
+    // Legs
+    ctx.fillStyle = "#1d2433";
+    ctx.beginPath();
+    ctx.roundRect(-22, -4, 18, 9, 4);
+    ctx.fill();
+    // Tank
+    ctx.fillStyle = "#ff8a3d";
+    ctx.beginPath();
+    ctx.roundRect(-12, -15, 20, 8, 4);
+    ctx.fill();
+    ctx.fillStyle = "#9aa7b4";
+    ctx.fillRect(8, -13, 4, 3);
+    // Body
+    ctx.fillStyle = "#1d2433";
+    ctx.beginPath();
+    ctx.ellipse(2, 0, 14, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#19b3a6";
+    ctx.fillRect(-6, -1, 18, 3);
+    // Arm reaching forward
+    ctx.strokeStyle = "#1d2433";
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(6, 4);
+    ctx.lineTo(16, 9 + k * 0.3);
+    ctx.stroke();
+    // Head (hood)
+    ctx.fillStyle = "#1d2433";
+    ctx.beginPath();
+    ctx.arc(18, -2, 7, 0, Math.PI * 2);
+    ctx.fill();
+    // Mask
+    ctx.fillStyle = "#ff5d73";
+    ctx.beginPath();
+    ctx.roundRect(18, -7, 9, 7, 2);
+    ctx.fill();
+    ctx.fillStyle = "#9be7ff";
+    ctx.beginPath();
+    ctx.roundRect(19.5, -5.5, 6, 4, 1.5);
+    ctx.fill();
+    // Regulator
+    ctx.fillStyle = "#9aa7b4";
+    ctx.beginPath();
+    ctx.arc(24, 3, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawBubbles() {
+    ctx.strokeStyle = "rgba(220, 248, 255, 0.85)";
+    ctx.fillStyle = "rgba(220, 248, 255, 0.15)";
+    ctx.lineWidth = 1.2;
+    for (const b of bubbles) {
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  function text(str, x, y, size) {
     ctx.font = `${size}px Bungee, "Arial Black", Impact, sans-serif`;
-    ctx.textAlign = align;
+    ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
     ctx.lineWidth = size / 5;
-    ctx.strokeStyle = "#3c2f1e";
+    ctx.strokeStyle = "#062a4a";
     ctx.strokeText(str, x, y);
-    ctx.fillStyle = "#fff8e7";
+    ctx.fillStyle = "#f4fbff";
     ctx.fillText(str, x, y);
   }
 
   function draw() {
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
-    drawSky();
-    for (const p of pipes) {
-      drawPipe(p.x, 0, p.top, true);
-      drawPipe(p.x, p.top + GAP, H - GROUND - p.top - GAP, false);
+    drawWater();
+    for (const c of cols) {
+      drawOverhang(c);
+      if (c.kind === "coral") drawCoral(c);
+      else if (c.kind === "wreck") drawWreck(c);
+      else drawRocks(c);
     }
-    drawGround();
-    drawBird();
+    drawFloor();
+    for (const h of hazards) drawHazard(h);
+    drawBubbles();
+    drawDiver();
 
     const cx = W / 2;
     if (state === "ready") {
       text("FLAPPY", cx, H * 0.18, 48);
-      text("BIRD", cx, H * 0.27, 48);
-      text("Tap to flap", cx, H * 0.6, 22);
-      if (best) text(`Best ${best}`, cx, H * 0.67, 18);
+      text("DIVER", cx, H * 0.27, 48);
+      text("Tap to swim", cx, H * 0.6, 22);
+      text("Dodge reefs, wrecks", cx, H * 0.66, 14);
+      text("and sea creatures", cx, H * 0.695, 14);
+      if (best) text(`Best ${best}`, cx, H * 0.76, 18);
     } else {
       text(String(score), cx, 70, 52);
     }
     if (state === "over") {
-      const since = time - flashT;
+      const since = time - overT;
       if (since < 0.12) {
-        ctx.fillStyle = "rgba(255,255,255,0.7)";
+        ctx.fillStyle = "rgba(255,255,255,0.6)";
         ctx.fillRect(0, 0, W, H);
       }
-      ctx.fillStyle = "rgba(27, 31, 58, 0.55)";
-      ctx.fillRect(cx - 130, H * 0.3, 260, 190);
+      ctx.fillStyle = "rgba(6, 42, 74, 0.6)";
+      ctx.beginPath();
+      ctx.roundRect(cx - 130, H * 0.3, 260, 190, 16);
+      ctx.fill();
       text("GAME OVER", cx, H * 0.36, 32);
       text(`Score ${score}`, cx, H * 0.45, 22);
       text(`Best ${best}`, cx, H * 0.51, 22);
@@ -292,9 +760,9 @@
     requestAnimationFrame(loop);
   }
 
-  canvas.addEventListener("pointerdown", e => { e.preventDefault(); canvas.focus(); flap(); });
+  canvas.addEventListener("pointerdown", e => { e.preventDefault(); canvas.focus(); kick(); });
   window.addEventListener("keydown", e => {
-    if (e.code === "Space" || e.code === "ArrowUp" || e.code === "Enter") { e.preventDefault(); flap(); }
+    if (e.code === "Space" || e.code === "ArrowUp" || e.code === "Enter") { e.preventDefault(); kick(); }
   });
   window.addEventListener("resize", () => { resize(); if (state === "ready") reset(); });
 
