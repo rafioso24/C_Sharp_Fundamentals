@@ -10,6 +10,7 @@
     --display: "Bungee", "Arial Black", Impact, sans-serif;
     color-scheme: dark;
   }
+  [hidden] { display: none !important; }
   html, body { height: 100%; }
   body {
     background: var(--bg);
@@ -29,11 +30,10 @@
   #game:focus-visible { outline: 3px solid var(--foam); outline-offset: -3px; }
 
   /* Buoyancy switch, shown on the start screen only */
-  #buoyancy[hidden] { display: none; }
   #buoyancy {
     position: fixed;
     left: 50%;
-    top: 81%;
+    top: 83%;
     transform: translate(-50%, -50%);
     display: flex;
     flex-direction: column;
@@ -67,6 +67,71 @@
   }
   #buoyancy button[aria-pressed="true"] { background: var(--foam); color: var(--bg); }
   #buoyancy button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  #buoyancy #audit-start {
+    font-size: 12px;
+    padding: 8px 14px;
+    box-shadow: 0 0 0 2px var(--foam);
+    background: var(--bg);
+  }
+
+  /* AI audit controls, pinned over the sea floor */
+  #audit-hud {
+    position: fixed;
+    left: 50%;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--display);
+    width: max-content;
+    max-width: calc(100% - 32px);
+  }
+  #audit-stats {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--bg);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+  .audit-row { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+  #audit-hud button, #audit-log button {
+    font: inherit;
+    font-size: 12px;
+    color: var(--ink);
+    background: var(--bg);
+    border: 0;
+    border-radius: 999px;
+    padding: 8px 14px;
+    box-shadow: 0 0 0 2px var(--foam);
+    cursor: pointer;
+  }
+  #audit-hud button:focus-visible, #audit-log button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  #audit-log {
+    position: fixed;
+    inset: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    border-radius: 14px;
+    background: var(--bg);
+    box-shadow: 0 0 0 2px var(--foam), 0 12px 40px rgba(0, 0, 0, 0.5);
+  }
+  #audit-log .head { display: flex; align-items: center; gap: 8px; font-family: var(--display); }
+  #audit-log .head strong { flex: 1; font-weight: 400; font-size: 16px; }
+  #audit-log-text {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    overflow: auto;
+    white-space: pre-wrap;
+    font: 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--ink);
+    -webkit-user-select: text;
+    user-select: text;
+  }
 </style>
 
 <canvas id="game" tabindex="0" aria-label="Flappy Diver game. Tap, click, or press space to swim."></canvas>
@@ -76,6 +141,23 @@
     <button type="button" id="buoy-neg" data-mode="negative">Sink ↓</button>
     <button type="button" id="buoy-pos" data-mode="positive">Float ↑</button>
   </div>
+  <button type="button" id="audit-start">Watch AI audit</button>
+</div>
+<div id="audit-hud" hidden>
+  <span id="audit-stats">AI AUDIT</span>
+  <div class="audit-row">
+    <button type="button" id="audit-speed">Speed 1×</button>
+    <button type="button" id="audit-log-btn">Crash log (0)</button>
+    <button type="button" id="audit-stop">Stop</button>
+  </div>
+</div>
+<div id="audit-log" hidden role="dialog" aria-label="Crash log">
+  <div class="head">
+    <strong>Crash log</strong>
+    <button type="button" id="audit-copy">Copy</button>
+    <button type="button" id="audit-close">Close</button>
+  </div>
+  <pre id="audit-log-text">No crashes yet.</pre>
 </div>
 
 <script>
@@ -96,6 +178,7 @@
   const PX_PER_M = 40;    // world units per meter of distance
   const FLOOR = 80;       // sea floor height
   const DIVER_R = 13;
+  const STEP = 1 / 60;    // fixed physics step, so the AI can predict the game exactly
 
   const KINDS = ["coral", "wreck", "rocks"];
   const HAZARDS = ["jelly", "shark", "puffer", "mine", "barrel"];
@@ -133,7 +216,9 @@
 
   function reset() {
     state = "ready";
-    buoyUI.hidden = false;
+    buoyUI.hidden = audit;
+    readyT = time;
+    aiPath = [];
     diver ={ x: Math.min(W * 0.3, 120), y: H * 0.42, vy: 0, rot: 0 };
     cols = [];
     hazards = [];
@@ -210,6 +295,7 @@
       state = "play";
       buoyUI.hidden = true;
       addCol(W + 40);
+      if (audit) { runs++; runStartT = time; failSnap = null; updateHud(); }
     }
     if (state === "play") {
       diver.vy = KICK * dir();
@@ -219,22 +305,52 @@
     }
   }
 
-  function die() {
+  function die(info) {
     if (state !== "play") return;
     state = "over";
     overT = time;
+    lastCause = info;
     puff(8);
+    if (audit) { recordCrash(info); return; }
     if (score > best) {
       best = score;
       try { localStorage.setItem("flappy-diver-best-m", String(best)); } catch (e) {}
     }
   }
 
-  // Ellipse (hazard) vs. circle (diver) hit test
-  function hitsEllipse(h) {
-    const dx = diver.x + 2 - h.x, dy = diver.y - h.y;
-    const a = h.rx + DIVER_R - 3, b = h.ry + DIVER_R - 3;
-    return (dx * dx) / (a * a) + (dy * dy) / (b * b) < 1;
+  // Where a hazard will be k physics steps from now (k = 0 is now)
+  function hazardAt(h, k) {
+    const T = time + STEP * k;
+    const baseY = h.type === "barrel" ? h.baseY + 30 * STEP * k : h.baseY;
+    const pr = h.type === "puffer" ? 11 + 6 * (0.5 + 0.5 * Math.sin(T * 2.5 + h.phase)) : 0;
+    return {
+      x: h.x - SPEED * STEP * k,
+      y: baseY + Math.sin(T * 2 + h.phase) * h.amp,
+      rx: pr || h.rx,
+      ry: pr || h.ry,
+    };
+  }
+
+  // Does a diver at height y touch anything, k steps from now? The game and the AI both use this.
+  function hitTest(y, k, margin) {
+    const off = SPEED * STEP * k;
+    const r = DIVER_R - 3 + margin, cx = diver.x + 2;
+    for (const c of cols) {
+      const x = c.x - off;
+      const nx = Math.max(x, Math.min(cx, x + COL_W));
+      if (Math.abs(nx - cx) < r && (y - r < c.top || y + r > c.top + GAP)) {
+        return { what: "column", kind: c.kind, part: y - r < c.top ? "top" : "bottom", dx: Math.round(x - diver.x), gapTop: Math.round(c.top), gapBottom: Math.round(c.top + GAP) };
+      }
+    }
+    for (const h of hazards) {
+      const s = hazardAt(h, k);
+      const dx = cx - s.x, dy = y - s.y;
+      const a = s.rx + r, b = s.ry + r;
+      if ((dx * dx) / (a * a) + (dy * dy) / (b * b) < 1) {
+        return { what: "hazard", type: h.type, dx: Math.round(s.x - diver.x), y: Math.round(s.y) };
+      }
+    }
+    return null;
   }
 
   function update(dt) {
@@ -249,37 +365,40 @@
       if (diver.y + DIVER_R >= H - FLOOR) {
         diver.y = H - FLOOR - DIVER_R;
         diver.vy = 0;
-        if (mode === "negative") die();
+        if (mode === "negative") die({ what: "floor" });
       }
       if (diver.y - DIVER_R < 0) {
         diver.y = DIVER_R;
         diver.vy = 0;
-        if (mode === "positive") die();
+        if (mode === "positive") die({ what: "surface" });
       }
     }
 
     if (state === "play") {
-      const r = DIVER_R - 3, cx = diver.x + 2;
       for (const c of cols) {
         c.x -= SPEED * dt;
         if (!c.passed && c.x + COL_W < diver.x) {
           c.passed = true;
           if (c.gap.type === "calm") calmT = time;
         }
-        const nx = Math.max(c.x, Math.min(cx, c.x + COL_W));
-        if (Math.abs(nx - cx) < r && (diver.y - r < c.top || diver.y + r > c.top + GAP)) die();
       }
       for (const h of hazards) {
         h.x -= SPEED * dt;
         if (h.type === "barrel") { h.baseY += 30 * dt; h.rot += 0.8 * dt; }
-        if (h.type === "puffer") h.rx = h.ry = 11 + 6 * (0.5 + 0.5 * Math.sin(time * 2.5 + h.phase));
-        h.y = h.baseY + Math.sin(time * 2 + h.phase) * h.amp;
-        if (hitsEllipse(h)) die();
+        const s = hazardAt(h, 0);
+        h.y = s.y;
+        h.rx = s.rx;
+        h.ry = s.ry;
       }
+      const hit = hitTest(diver.y, 0, 0);
+      if (hit) die(hit);
+    }
+
+    if (state === "play") {
       dist += SPEED * dt;
       score = Math.floor(dist / PX_PER_M);
       const last = cols[cols.length - 1];
-      if (last && last.x + last.gap.len < W + 40) addCol(last.x + last.gap.len);
+      if (last && last.x < W + 40) addCol(last.x + last.gap.len);
       while (cols.length && cols[0].x < -COL_W - 20) cols.shift();
       hazards = hazards.filter(h => h.x > -80 && h.baseY < H);
 
@@ -293,6 +412,219 @@
     }
     bubbles = bubbles.filter(b => b.y > -10);
   }
+
+  /* ---------- AI audit ---------- */
+
+  // The AI only ever calls kick(), same as a player tap. It plans by simulating
+  // the game ahead with hitTest(), trying tap / no-tap at each decision point.
+  const DEC = 3;          // physics steps between decisions (0.05 s)
+  const HORIZON = 36;     // decisions to look ahead (1.8 s)
+  let audit = false, auditSpeed = 1, runs = 0, auditBest = 0, runStartT = 0, readyT = 0;
+  let aiPath = [], lastPlan = null, failSnap = null, lastCause = null, stepCount = 0;
+  const crashes = [];
+
+  function simStep(s, tap, k, margin) {
+    let vy = tap ? KICK * dir() : s.vy;
+    vy += GRAVITY * dir() * STEP;
+    let y = s.y + vy * STEP;
+    if (y + DIVER_R + (mode === "negative" ? margin : 0) >= H - FLOOR) {
+      if (mode === "negative") return { y, vy, hit: { what: "floor" } };
+      y = H - FLOOR - DIVER_R; vy = 0;
+    }
+    if (y - DIVER_R - (mode === "positive" ? margin : 0) < 0) {
+      if (mode === "positive") return { y, vy, hit: { what: "surface" } };
+      y = DIVER_R; vy = 0;
+    }
+    return { y, vy, hit: hitTest(y, k, margin) };
+  }
+
+  // Aim for the middle of the next opening; used only to choose which option to try first
+  function wantsTap(s, k) {
+    const off = SPEED * STEP * k;
+    let target = H * 0.45;
+    for (const c of cols) {
+      if (c.x - off + COL_W > diver.x - DIVER_R) { target = c.top + GAP / 2; break; }
+    }
+    return (s.y + s.vy * 0.15 - target) * dir() > 0;
+  }
+
+  function plan(margin, budget) {
+    const visited = new Set(), path = [];
+    let nodes = 0, bestDepth = 0, bestPath = [];
+    function dfs(s, d, k) {
+      if (d === HORIZON) return true;
+      if (nodes > budget) return false;
+      const key = d + "|" + Math.round(s.y / 3) + "|" + Math.round(s.vy / 30);
+      if (visited.has(key)) return false;
+      visited.add(key);
+      const order = wantsTap(s, k) ? [true, false] : [false, true];
+      for (const tap of order) {
+        let cur = s, ok = true;
+        for (let i = 0; i < DEC; i++) {
+          nodes++;
+          cur = simStep(cur, tap && i === 0, k + i + 1, margin);
+          if (cur.hit) { ok = false; break; }
+        }
+        if (!ok) continue;
+        path.push(tap);
+        if (path.length > bestDepth) { bestDepth = path.length; bestPath = path.slice(); }
+        if (dfs(cur, d + 1, k + DEC)) return true;
+        path.pop();
+      }
+      return false;
+    }
+    const ok = dfs({ y: diver.y, vy: diver.vy }, 0, 0);
+    return {
+      ok,
+      path: ok ? path.slice() : bestPath,
+      seconds: +((ok ? HORIZON : bestDepth) * DEC * STEP).toFixed(2),
+      margin,
+      exhausted: nodes > budget,
+    };
+  }
+
+  function aiThink() {
+    if (state === "ready") { if (time - readyT > 0.5) kick(); return; }
+    if (state === "over") { if (time - overT > 1.4) reset(); return; }
+    if (stepCount % DEC !== 0) return;
+
+    // Try with a safety cushion first, then with none
+    let p = plan(4, 30000);
+    if (!p.ok) {
+      const tight = plan(0, 80000);
+      if (tight.ok || tight.seconds >= p.seconds) p = tight;
+    }
+    lastPlan = p;
+    if (p.ok) failSnap = null;
+    else if (!failSnap) failSnap = { at: time, plan: p, scene: sceneSnapshot() };
+
+    // Trace the plan so it can be drawn
+    aiPath = [];
+    let s = { y: diver.y, vy: diver.vy };
+    for (let i = 0; i < p.path.length * DEC; i++) {
+      s = simStep(s, p.path[Math.floor(i / DEC)] && i % DEC === 0, i + 1, 0);
+      if (i % 3 === 2) aiPath.push({ x: diver.x + SPEED * STEP * (i + 1), y: s.y });
+      if (s.hit) break;
+    }
+
+    if (p.path[0]) kick();
+  }
+
+  function sceneSnapshot() {
+    const x0 = diver.x;
+    return {
+      run_time_s: +(time - runStartT).toFixed(2),
+      distance_m: score,
+      diver: { y: Math.round(diver.y), vy: Math.round(diver.vy) },
+      columns: cols
+        .filter(c => c.x + COL_W > x0 - 40 && c.x < x0 + 420)
+        .map(c => ({ kind: c.kind, dx: Math.round(c.x - x0), gapTop: Math.round(c.top), gapBottom: Math.round(c.top + GAP), gapAfter: c.gap.type })),
+      hazards: hazards
+        .filter(h => h.x > x0 - 60 && h.x < x0 + 420)
+        .map(h => ({ type: h.type, dx: Math.round(h.x - x0), y: Math.round(h.y), swing: h.amp })),
+    };
+  }
+
+  const HAZARD_NAMES = { jelly: "jellyfish", shark: "shark", puffer: "pufferfish", mine: "sea mine", barrel: "toxic barrel" };
+  const KIND_NAMES = { coral: "coral reef", wreck: "shipwreck", rocks: "rock pile" };
+  function causeName(info) {
+    if (!info) return "unknown";
+    if (info.what === "floor") return "sea floor";
+    if (info.what === "surface") return "surface";
+    if (info.what === "column") return info.part === "top" ? "rock ledge above " + KIND_NAMES[info.kind] : KIND_NAMES[info.kind];
+    return HAZARD_NAMES[info.type] || info.type;
+  }
+
+  function recordCrash(info) {
+    auditBest = Math.max(auditBest, score);
+    let verdict;
+    if (!failSnap) {
+      verdict = "AI error: the plan said this was safe, but the diver crashed. The AI's model of the game is off.";
+    } else if (failSnap.plan.exhausted) {
+      verdict = `Search ran out of time ${(time - failSnap.at).toFixed(2)} s before the crash. Might be winnable with a deeper search.`;
+    } else {
+      verdict = `No safe path: ${(time - failSnap.at).toFixed(2)} s before the crash, every tap pattern hit something within ${failSnap.plan.seconds} s. This layout is likely unwinnable.`;
+    }
+    crashes.push({
+      crash: crashes.length + 1,
+      run: runs,
+      mode: mode === "positive" ? "float" : "sink",
+      distance_m: score,
+      run_time_s: +(time - runStartT).toFixed(2),
+      hit: causeName(info),
+      hit_detail: info,
+      diver_at_crash: { y: Math.round(diver.y), vy: Math.round(diver.vy) },
+      verdict,
+      first_trouble: failSnap ? failSnap.scene : null,
+      scene_at_crash: sceneSnapshot(),
+    });
+    updateHud();
+    renderLog();
+  }
+
+  function crashText(c) {
+    const lines = [
+      `#${c.crash}  Run ${c.run}  ${c.mode} mode  ${c.distance_m} m  (${c.run_time_s} s)`,
+      `Hit: ${c.hit}`,
+      `Verdict: ${c.verdict}`,
+    ];
+    const sc = c.first_trouble || c.scene_at_crash;
+    lines.push(c.first_trouble ? `Scene when the AI first found no safe path (${sc.run_time_s} s):` : "Scene at crash:");
+    lines.push(`  diver y ${sc.diver.y}, speed ${sc.diver.vy}`);
+    for (const col of sc.columns) lines.push(`  ${KIND_NAMES[col.kind]} ${col.dx >= 0 ? "+" : ""}${col.dx} ahead, opening y ${col.gapTop}-${col.gapBottom}, then ${col.gapAfter} gap`);
+    for (const h of sc.hazards) lines.push(`  ${HAZARD_NAMES[h.type]} ${h.dx >= 0 ? "+" : ""}${h.dx} ahead, y ${h.y}, swing ±${h.swing}`);
+    return lines.join("\n");
+  }
+
+  const hud = document.getElementById("audit-hud");
+  const hudStats = document.getElementById("audit-stats");
+  const logBtn = document.getElementById("audit-log-btn");
+  const speedBtn = document.getElementById("audit-speed");
+  const logPanel = document.getElementById("audit-log");
+  const logText = document.getElementById("audit-log-text");
+
+  function updateHud() {
+    hudStats.textContent = `AI AUDIT · RUN ${runs} · CRASHES ${crashes.length} · BEST ${auditBest} M`;
+    logBtn.textContent = `Crash log (${crashes.length})`;
+  }
+  function renderLog() {
+    logText.textContent = crashes.length ? crashes.map(crashText).join("\n\n") : "No crashes yet.";
+  }
+  function startAudit() {
+    audit = true;
+    hud.hidden = false;
+    updateHud();
+    reset();
+  }
+  function stopAudit() {
+    audit = false;
+    hud.hidden = true;
+    logPanel.hidden = true;
+    reset();
+  }
+  document.getElementById("audit-start").addEventListener("click", startAudit);
+  document.getElementById("audit-stop").addEventListener("click", stopAudit);
+  speedBtn.addEventListener("click", () => {
+    auditSpeed = auditSpeed === 1 ? 4 : 1;
+    speedBtn.textContent = `Speed ${auditSpeed}×`;
+  });
+  logBtn.addEventListener("click", () => { renderLog(); logPanel.hidden = false; });
+  document.getElementById("audit-close").addEventListener("click", () => { logPanel.hidden = true; });
+  document.getElementById("audit-copy").addEventListener("click", e => {
+    const btn = e.currentTarget;
+    const all = crashes.map(crashText).join("\n\n") + "\n\n--- JSON ---\n" + JSON.stringify(crashes, null, 2);
+    const done = () => { btn.textContent = "Copied"; setTimeout(() => (btn.textContent = "Copy"), 1500); };
+    const fallback = () => {
+      logText.textContent = all;
+      const range = document.createRange();
+      range.selectNodeContents(logText);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      btn.textContent = "Selected";
+    };
+    try { navigator.clipboard.writeText(all).then(done, fallback); } catch (err) { fallback(); }
+  });
 
   /* ---------- Drawing ---------- */
 
@@ -812,10 +1144,20 @@
     drawFloor();
     for (const h of hazards) drawHazard(h);
     drawBubbles();
+    if (audit && state === "play" && aiPath.length) {
+      ctx.fillStyle = lastPlan && lastPlan.ok ? "rgba(155, 231, 255, 0.8)" : "rgba(255, 93, 115, 0.9)";
+      for (const pt of aiPath) {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     drawDiver();
 
     const cx = W / 2;
-    if (state === "ready") {
+    if (state === "ready" && audit) {
+      text("AI AUDIT", cx, H * 0.22, 36);
+    } else if (state === "ready") {
       text("FLAPPY", cx, H * 0.18, 48);
       text("DIVER", cx, H * 0.27, 48);
       text(mode === "positive" ? "Tap to swim down" : "Tap to swim up", cx, H * 0.58, 22);
@@ -843,29 +1185,46 @@
       ctx.fill();
       text("GAME OVER", cx, H * 0.36, 32);
       text(`Distance ${score} m`, cx, H * 0.45, 20);
-      text(`Best ${best} m`, cx, H * 0.51, 22);
-      if (since > 0.6) text("Tap to retry", cx, H * 0.58, 18);
+      if (audit) {
+        text("Hit:", cx, H * 0.51, 16);
+        text(causeName(lastCause), cx, H * 0.55, causeName(lastCause).length > 18 ? 11 : 15);
+      } else {
+        text(`Best ${best} m`, cx, H * 0.51, 22);
+        if (since > 0.6) text("Tap to retry", cx, H * 0.58, 18);
+      }
     }
   }
 
-  let lastT = performance.now();
+  // Fixed-step loop: the game always advances in STEP-sized ticks
+  let lastT = performance.now(), acc = 0;
   time = 0;
   function loop(now) {
-    const dt = Math.min(0.033, (now - lastT) / 1000);
+    acc += Math.min(0.1, (now - lastT) / 1000) * (audit ? auditSpeed : 1);
     lastT = now;
-    time += dt;
-    update(dt);
+    let n = 0;
+    while (acc >= STEP && n < 30) {
+      if (audit) aiThink();
+      time += STEP;
+      update(STEP);
+      stepCount++;
+      acc -= STEP;
+      n++;
+    }
+    if (n === 30) acc = 0;
     draw();
     requestAnimationFrame(loop);
   }
 
-  canvas.addEventListener("pointerdown", e => { e.preventDefault(); canvas.focus(); kick(); });
+  canvas.addEventListener("pointerdown", e => { e.preventDefault(); if (audit) return; canvas.focus(); kick(); });
   window.addEventListener("keydown", e => {
+    if (audit) { if (e.code === "Escape") stopAudit(); return; }
     if (e.target.closest && e.target.closest("button")) return; // let the buoyancy buttons handle their own keys
     if (e.code === "Space" || e.code === "ArrowUp" || e.code === "ArrowDown" || e.code === "Enter") { e.preventDefault(); kick(); }
     if (e.code === "KeyB" && state === "ready") setMode(mode === "positive" ? "negative" : "positive");
   });
   window.addEventListener("resize", () => { resize(); if (state === "ready") reset(); });
+
+  window.flappyAudit = { start: startAudit, crashes, stats: () => ({ runs, auditBest, crashes: crashes.length }), setSpeed: v => (auditSpeed = v) };
 
   resize();
   reset();
