@@ -27,9 +27,56 @@
     cursor: pointer;
   }
   #game:focus-visible { outline: 3px solid var(--foam); outline-offset: -3px; }
+
+  /* Buoyancy switch, shown on the start screen only */
+  #buoyancy[hidden] { display: none; }
+  #buoyancy {
+    position: fixed;
+    left: 50%;
+    top: 81%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--display);
+  }
+  #buoyancy .label {
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-shadow: 0 2px 0 var(--bg);
+  }
+  #buoyancy .seg {
+    display: flex;
+    padding: 4px;
+    gap: 4px;
+    border-radius: 999px;
+    background: var(--bg);
+    box-shadow: 0 0 0 2px var(--foam);
+  }
+  #buoyancy button {
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    background: transparent;
+    border: 0;
+    border-radius: 999px;
+    padding: 10px 16px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #buoyancy button[aria-pressed="true"] { background: var(--foam); color: var(--bg); }
+  #buoyancy button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 </style>
 
-<canvas id="game" tabindex="0" aria-label="Flappy Diver game. Tap, click, or press space to swim up."></canvas>
+<canvas id="game" tabindex="0" aria-label="Flappy Diver game. Tap, click, or press space to swim."></canvas>
+<div id="buoyancy" role="group" aria-label="Buoyancy">
+  <span class="label">BUOYANCY</span>
+  <div class="seg">
+    <button type="button" id="buoy-neg" data-mode="negative">Sink ↓</button>
+    <button type="button" id="buoy-pos" data-mode="positive">Float ↑</button>
+  </div>
+</div>
 
 <script>
 (() => {
@@ -56,6 +103,21 @@
 
   try { best = Number(localStorage.getItem("flappy-diver-best")) || 0; } catch (e) { best = 0; }
 
+  // Buoyancy: "negative" sinks and taps push up; "positive" floats and taps push down.
+  let mode = "negative";
+  try { if (localStorage.getItem("flappy-diver-buoyancy") === "positive") mode = "positive"; } catch (e) {}
+  const dir = () => (mode === "positive" ? -1 : 1);
+
+  const buoyUI = document.getElementById("buoyancy");
+  const buoyBtns = buoyUI.querySelectorAll("button");
+  function setMode(m) {
+    mode = m;
+    buoyBtns.forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
+    try { localStorage.setItem("flappy-diver-buoyancy", m); } catch (e) {}
+  }
+  buoyBtns.forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  setMode(mode);
+
   // Fixed background decor, made once
   const motes = Array.from({ length: 40 }, () => ({ x: Math.random(), y: Math.random(), s: 1 + Math.random() * 2 }));
   const school = Array.from({ length: 7 }, (_, i) => ({ dx: (i % 4) * 16, dy: Math.floor(i / 4) * 12 + (i % 2) * 5 }));
@@ -70,7 +132,8 @@
 
   function reset() {
     state = "ready";
-    diver = { x: Math.min(W * 0.3, 120), y: H * 0.42, vy: 0, rot: 0 };
+    buoyUI.hidden = false;
+    diver ={ x: Math.min(W * 0.3, 120), y: H * 0.42, vy: 0, rot: 0 };
     cols = [];
     hazards = [];
     bubbles = [];
@@ -126,10 +189,11 @@
   function kick() {
     if (state === "ready") {
       state = "play";
+      buoyUI.hidden = true;
       addCol(W + 40);
     }
     if (state === "play") {
-      diver.vy = KICK;
+      diver.vy = KICK * dir();
       puff(3);
     } else if (state === "over" && time - overT > 0.6) {
       reset();
@@ -159,15 +223,20 @@
     if (state !== "over") floorX = (floorX - SPEED * dt) % 48;
 
     if (state === "play" || state === "over") {
-      diver.vy += GRAVITY * dt;
+      diver.vy += GRAVITY * dir() * dt;
       diver.y += diver.vy * dt;
-      diver.rot = Math.max(-0.5, Math.min(1.2, diver.vy / 550));
+      diver.rot = Math.max(-0.8, Math.min(1.2, diver.vy / 550));
+      // Sinkers lose by hitting the sea floor; floaters lose by hitting the surface.
       if (diver.y + DIVER_R >= H - FLOOR) {
         diver.y = H - FLOOR - DIVER_R;
         diver.vy = 0;
-        die();
+        if (mode === "negative") die();
       }
-      if (diver.y - DIVER_R < 0) { diver.y = DIVER_R; diver.vy = 0; }
+      if (diver.y - DIVER_R < 0) {
+        diver.y = DIVER_R;
+        diver.vy = 0;
+        if (mode === "positive") die();
+      }
     }
 
     if (state === "play") {
@@ -725,10 +794,10 @@
     if (state === "ready") {
       text("FLAPPY", cx, H * 0.18, 48);
       text("DIVER", cx, H * 0.27, 48);
-      text("Tap to swim", cx, H * 0.6, 22);
-      text("Dodge reefs, wrecks", cx, H * 0.66, 14);
-      text("and sea creatures", cx, H * 0.695, 14);
-      if (best) text(`Best ${best}`, cx, H * 0.76, 18);
+      text(mode === "positive" ? "Tap to swim down" : "Tap to swim up", cx, H * 0.58, 22);
+      text("Dodge reefs, wrecks", cx, H * 0.64, 14);
+      text("and sea creatures", cx, H * 0.675, 14);
+      if (best) text(`Best ${best}`, cx, H * 0.72, 16);
     } else {
       text(String(score), cx, 70, 52);
     }
@@ -762,7 +831,9 @@
 
   canvas.addEventListener("pointerdown", e => { e.preventDefault(); canvas.focus(); kick(); });
   window.addEventListener("keydown", e => {
-    if (e.code === "Space" || e.code === "ArrowUp" || e.code === "Enter") { e.preventDefault(); kick(); }
+    if (e.target.closest && e.target.closest("button")) return; // let the buoyancy buttons handle their own keys
+    if (e.code === "Space" || e.code === "ArrowUp" || e.code === "ArrowDown" || e.code === "Enter") { e.preventDefault(); kick(); }
+    if (e.code === "KeyB" && state === "ready") setMode(mode === "positive" ? "negative" : "positive");
   });
   window.addEventListener("resize", () => { resize(); if (state === "ready") reset(); });
 
