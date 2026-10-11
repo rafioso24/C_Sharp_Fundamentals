@@ -208,6 +208,8 @@
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
+    // Skip while the page is hidden or collapsed; a zero size would break the world width
+    if (!canvas.clientWidth || !canvas.clientHeight) return;
     canvas.width = Math.round(canvas.clientWidth * dpr);
     canvas.height = Math.round(canvas.clientHeight * dpr);
     scale = canvas.height / H;
@@ -240,7 +242,7 @@
       kind: KINDS[Math.floor(Math.random() * KINDS.length)],
       seed: Math.random() * 1000,
       passed: false,
-      gap: pickGap(),
+      gap: pickGap(prev),
     };
     cols.push(col);
     if (!prev) return;
@@ -257,9 +259,10 @@
   }
 
   // Decide how far away the next column is, and what fills the space
-  function pickGap() {
+  function pickGap(prev) {
     const r = Math.random();
-    if (r < 0.12) return { type: "calm", len: 650 + Math.random() * 150 };
+    // Never two calm stretches in a row
+    if (r < 0.12 && !(prev && prev.gap.type === "calm")) return { type: "calm", len: 650 + Math.random() * 150 };
     if (r < 0.37) return { type: "wide", len: 460 + Math.random() * 160 };
     return { type: "normal", len: SPACING };
   }
@@ -397,8 +400,10 @@
     if (state === "play") {
       dist += SPEED * dt;
       score = Math.floor(dist / PX_PER_M);
-      const last = cols[cols.length - 1];
-      if (last && last.x < W + 40) addCol(last.x + last.gap.len);
+      // Keep obstacles coming; if the list ever runs dry, start a new one just off-screen
+      let last = cols[cols.length - 1];
+      if (!last) addCol(W + 40);
+      else while (last.x < W + 40) { addCol(last.x + last.gap.len); last = cols[cols.length - 1]; }
       while (cols.length && cols[0].x < -COL_W - 20) cols.shift();
       hazards = hazards.filter(h => h.x > -80 && h.baseY < H);
 
