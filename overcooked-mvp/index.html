@@ -1,0 +1,507 @@
+<title>Kitchen Rush</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito:wght@600;800&display=swap">
+<style>
+/* Layout: one-screen arcade — order rail on top, kitchen in the middle, thumb controls at the bottom. Single dark kitchen look by choice. */
+:root {
+  --bg: #12302c;
+  --panel: #1c423c;
+  --ink: #fdf6e3;
+  --muted: #a9c7bf;
+  --tomato: #e8483b;
+  --mustard: #f4b740;
+  --display: "Lilita One", "Arial Rounded MT Bold", system-ui, sans-serif;
+  --body: "Nunito", system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--body);
+  overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#app { height: 100%; display: flex; flex-direction: column; gap: 8px; padding-inline: 16px; padding-block: 8px; box-sizing: border-box; max-width: 720px; margin: 0 auto; }
+#hud { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+#hud .stat { font-family: var(--display); font-size: 22px; letter-spacing: .02em; font-variant-numeric: tabular-nums; }
+#hud .lbl { font-family: var(--body); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); display: block; }
+#timer.low { color: var(--tomato); }
+#orders { display: flex; gap: 6px; min-height: 74px; overflow: hidden; }
+.order { flex: 0 0 calc(25% - 5px); min-width: 0; background: var(--ink); color: #2b2620; border-radius: 10px; padding: 6px 6px 8px; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; position: relative; overflow: hidden; animation: pop .25s ease-out; }
+.order .ico { font-size: 20px; line-height: 1.1; }
+.order .nm { font-family: var(--display); font-size: 13px; line-height: 1.1; }
+.order .hint { font-size: 10px; color: #6b6255; line-height: 1.2; }
+.order .bar { position: absolute; left: 0; bottom: 0; height: 5px; background: #4caf6a; }
+@keyframes pop { from { transform: scale(.6); opacity: .3 } to { transform: scale(1); opacity: 1 } }
+#stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; }
+canvas { display: block; border-radius: 12px; box-shadow: 0 6px 0 #0b1f1c; }
+#controls { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 150px; flex: 0 0 auto; padding-bottom: env(safe-area-inset-bottom, 0px); }
+#stick { width: 130px; height: 130px; border-radius: 50%; background: var(--panel); border: 3px solid #2d5c54; position: relative; flex: 0 0 auto; }
+#knob { width: 56px; height: 56px; border-radius: 50%; background: var(--mustard); position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); box-shadow: 0 4px 0 #a87618; }
+#btns { display: flex; gap: 14px; align-items: flex-end; }
+.btn { font-family: var(--display); font-size: 18px; letter-spacing: .04em; color: var(--ink); border: 0; border-radius: 50%; width: 84px; height: 84px; cursor: pointer; touch-action: none; }
+#chopBtn { background: #3a7bd5; box-shadow: 0 6px 0 #25528f; margin-bottom: 28px; }
+#grabBtn { background: var(--tomato); box-shadow: 0 6px 0 #a02a20; width: 96px; height: 96px; }
+.btn.down { transform: translateY(4px); box-shadow: 0 2px 0 rgba(0,0,0,.4); }
+.btn:focus-visible, #playBtn:focus-visible { outline: 3px solid var(--mustard); outline-offset: 3px; }
+.overlay { position: fixed; inset: 0; background: rgba(10, 30, 27, .92); display: flex; align-items: center; justify-content: center; padding-inline: 16px; z-index: 5; }
+.card { background: var(--panel); border-radius: 18px; padding: 22px 20px; max-width: 380px; width: 100%; box-sizing: border-box; text-align: left; }
+.card h1 { font-family: var(--display); font-weight: 400; font-size: 40px; margin: 0 0 4px; color: var(--mustard); text-wrap: balance; }
+.card h2 { font-family: var(--display); font-weight: 400; font-size: 30px; margin: 0; color: var(--mustard); }
+.card p { margin: 0 0 10px; line-height: 1.45; color: var(--ink); }
+.card ul { margin: 0 0 16px; padding-left: 18px; line-height: 1.5; color: var(--muted); font-size: 14px; }
+.card b { color: var(--ink); }
+#playBtn, #againBtn { font-family: var(--display); font-size: 22px; background: var(--tomato); color: var(--ink); border: 0; border-radius: 14px; padding: 12px 0; width: 100%; box-shadow: 0 5px 0 #a02a20; cursor: pointer; }
+.big { font-family: var(--display); font-size: 56px; color: var(--ink); margin: 6px 0; font-variant-numeric: tabular-nums; }
+.stars { font-size: 34px; letter-spacing: 6px; margin-bottom: 8px; color: var(--mustard); }
+@media (prefers-reduced-motion: reduce) { .order { animation: none; } }
+@media (max-height: 640px) { #controls { height: 120px; } #stick { width: 110px; height: 110px; } .btn { width: 72px; height: 72px; font-size: 16px; } #grabBtn { width: 82px; height: 82px; } #orders { min-height: 66px; } }
+</style>
+
+<div id="app">
+  <div id="hud">
+    <div><span class="lbl">Tips</span><span class="stat" id="score">0</span></div>
+    <div style="text-align:right"><span class="lbl">Shift ends in</span><span class="stat" id="timer">3:00</span></div>
+  </div>
+  <div id="orders" aria-live="polite"></div>
+  <div id="stage"><canvas id="cv" aria-label="Kitchen"></canvas></div>
+  <div id="controls">
+    <div id="stick" aria-label="Move"><div id="knob"></div></div>
+    <div id="btns">
+      <button class="btn" id="chopBtn" type="button">CHOP</button>
+      <button class="btn" id="grabBtn" type="button">GRAB</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="startScreen">
+  <div class="card">
+    <h1>Kitchen Rush</h1>
+    <p>Cook the orders before the tickets run out. You have 3 minutes.</p>
+    <ul>
+      <li><b>Joystick</b> to walk. You use whatever you face.</li>
+      <li><b>GRAB</b> picks up, puts down, and serves.</li>
+      <li><b>Hold CHOP</b> at a cutting board to chop food.</li>
+      <li><b>Salad:</b> chopped lettuce + chopped tomato on a plate.</li>
+      <li><b>Soup:</b> 3 chopped tomatoes or onions in a pot. Wait, then scoop it with a plate. Don't let it burn!</li>
+      <li>Bring plates to the <b>window</b>. Mistakes go in the <b>trash</b>.</li>
+    </ul>
+    <button id="playBtn" type="button">Start shift</button>
+  </div>
+</div>
+
+<div class="overlay" id="endScreen" hidden>
+  <div class="card" style="text-align:center">
+    <h2>Shift over!</h2>
+    <div class="big" id="finalScore">0</div>
+    <div class="stars" id="stars">☆☆☆</div>
+    <p id="finalStats"></p>
+    <button id="againBtn" type="button">Play again</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const COLS = 9, ROWS = 9;
+  // C counter, K cutting board, S stove, P plates, W serve window, X trash, T/L/O crates
+  const MAP = [
+    "CCTLOCSSC",
+    "C.......C",
+    "K.......W",
+    "C.......C",
+    "K..CCC..W",
+    "C.......C",
+    "C.......C",
+    "P.......X",
+    "CCCCCCCCC",
+  ];
+  const ROUND = 180, CHOP_TIME = 1.4, COOK = 7, BURN = 9, SPEED = 4.2;
+  const EMO = { tomato: "🍅", lettuce: "🥬", onion: "🧅" };
+  const CRATE = { T: "tomato", L: "lettuce", O: "onion" };
+  const SOUP_COLOR = { tomato: "#d9432f", onion: "#e0a63a" };
+  const RECIPES = {
+    salad: { name: "Salad", parts: ["lettuce", "tomato"], icons: "🥬🍅", hint: "chop both, plate", time: 55 },
+    tsoup: { name: "Tomato Soup", parts: ["soup:tomato"], icons: "🍅🍲", hint: "3 chopped in pot", time: 75 },
+    osoup: { name: "Onion Soup", parts: ["soup:onion"], icons: "🧅🍲", hint: "3 chopped in pot", time: 75 },
+  };
+  for (const r of Object.values(RECIPES)) r.key = [...r.parts].sort().join("+");
+
+  const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+  const $ = id => document.getElementById(id);
+  let tile = 40, dpr = 1;
+  let tiles, chef, orders, score, timeLeft, running = false, nextOrderIn, served, missed, floats, orderId = 0;
+  const input = { jx: 0, jy: 0, kx: 0, ky: 0, chop: false };
+
+  const newPot = () => ({ k: "pot", ing: null, n: 0, t: 0 });
+  const potDone = p => p.n === 3 && p.t >= COOK && p.t < COOK + BURN;
+  const potBurnt = p => p.n === 3 && p.t >= COOK + BURN;
+
+  function reset() {
+    tiles = MAP.map(row => [...row].map(c => ({ c, item: c === "S" ? newPot() : null })));
+    tiles[4][4].item = { k: "plate", parts: [] }; // a plate to get started
+    chef = { x: 4.5, y: 5.5, fx: 0, fy: -1, held: null, bob: 0, chopT: 0 };
+    orders = []; score = 0; timeLeft = ROUND; nextOrderIn = 12; served = 0; missed = 0; floats = [];
+    $("orders").innerHTML = "";
+    addOrder("salad");
+  }
+
+  function addOrder(r) {
+    const keys = Object.keys(RECIPES);
+    r = r || keys[Math.floor(Math.random() * keys.length)];
+    const o = { id: ++orderId, r, max: RECIPES[r].time, t: RECIPES[r].time };
+    const el = document.createElement("div");
+    el.className = "order";
+    el.innerHTML = `<div class="ico">${RECIPES[r].icons}</div><div class="nm">${RECIPES[r].name}</div><div class="hint">${RECIPES[r].hint}</div><div class="bar"></div>`;
+    o.el = el; o.bar = el.querySelector(".bar");
+    $("orders").appendChild(el);
+    orders.push(o);
+  }
+  function removeOrder(i) { orders[i].el.remove(); orders.splice(i, 1); }
+
+  function float(text, color) { floats.push({ text, color: color || "#fdf6e3", x: chef.x, y: chef.y - 0.6, t: 1.2 }); }
+
+  // ---------- interaction ----------
+  function target() {
+    const tx = Math.floor(chef.x) + chef.fx, ty = Math.floor(chef.y) + chef.fy;
+    if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) return null;
+    return tiles[ty][tx];
+  }
+  function canAdd(plate, part) {
+    if (plate.parts.some(p => p.startsWith("soup"))) return false;
+    if (part.startsWith("soup")) return plate.parts.length === 0;
+    if (part === "onion") return false;
+    return !plate.parts.includes(part);
+  }
+  const isChopped = it => it && it.k === "ing" && it.chopped;
+
+  function grab() {
+    if (!running) return;
+    const T = target(); if (!T || T.c === ".") return;
+    const H = chef.held;
+    switch (T.c) {
+      case "T": case "L": case "O":
+        if (!H) chef.held = { k: "ing", name: CRATE[T.c], chopped: false, prog: 0 };
+        else if (T.item == null && H.k === "ing" && H.name === CRATE[T.c] && !H.chopped) chef.held = null; // put it back
+        return;
+      case "P":
+        if (!H) chef.held = { k: "plate", parts: [] };
+        return;
+      case "X":
+        if (!H) return;
+        if (H.k === "plate") { if (H.parts.length) { H.parts = []; float("Tossed", "#a9c7bf"); } }
+        else { chef.held = null; float("Tossed", "#a9c7bf"); }
+        return;
+      case "W":
+        if (H && H.k === "plate" && H.parts.length) {
+          if (serve(H)) chef.held = null;
+        } else if (H) float("Plate it first!", "#f4b740");
+        return;
+      case "S": {
+        const pot = T.item;
+        if (H && isChopped(H)) {
+          if (H.name === "lettuce") { float("Lettuce isn't for soup", "#f4b740"); return; }
+          if (pot.n < 3 && (!pot.ing || pot.ing === H.name)) { pot.ing = H.name; pot.n++; pot.t = 0; chef.held = null; }
+          else if (pot.n >= 3) float("Pot is full", "#f4b740");
+          else float("Same veggie only", "#f4b740");
+        } else if (H && H.k === "ing") float("Chop it first!", "#f4b740");
+        else if (H && H.k === "plate" && potDone(pot)) {
+          if (canAdd(H, "soup:" + pot.ing)) { H.parts.push("soup:" + pot.ing); Object.assign(pot, newPot()); }
+          else float("Need an empty plate", "#f4b740");
+        } else if (!H && potBurnt(pot)) { Object.assign(pot, newPot()); float("Dumped", "#a9c7bf"); }
+        else if (H && H.k === "plate" && pot.n === 3 && !potBurnt(pot)) float("Still cooking…", "#f4b740");
+        return;
+      }
+      case "C": case "K": {
+        const I = T.item;
+        if (!H && I) { chef.held = I; T.item = null; }
+        else if (H && !I) {
+          if (T.c === "K" && H.k !== "ing") { float("Boards are for chopping", "#f4b740"); return; }
+          T.item = H; chef.held = null;
+        } else if (H && I) {
+          if (H.k === "plate" && isChopped(I) && canAdd(H, I.name)) { H.parts.push(I.name); T.item = null; }
+          else if (I.k === "plate" && isChopped(H) && canAdd(I, H.name)) { I.parts.push(H.name); chef.held = null; }
+          else if (H.k === "plate" && I.k === "ing" && !I.chopped) float("Chop it first!", "#f4b740");
+        }
+        return;
+      }
+    }
+  }
+
+  function serve(plate) {
+    const key = [...plate.parts].sort().join("+");
+    let best = -1;
+    orders.forEach((o, i) => { if (RECIPES[o.r].key === key && (best < 0 || o.t < orders[best].t)) best = i; });
+    if (best < 0) { float("Nobody ordered that", "#f4b740"); return false; }
+    const o = orders[best];
+    const tip = Math.ceil((o.t / o.max) * 10);
+    score += 20 + tip; served++;
+    float(`+${20 + tip}`, "#7be08f");
+    removeOrder(best);
+    if (orders.length === 0) nextOrderIn = Math.min(nextOrderIn, 2);
+    return true;
+  }
+
+  // ---------- update ----------
+  function hits(x, y, r) {
+    for (const [ox, oy] of [[-r, -r], [r, -r], [-r, r], [r, r]]) {
+      const tx = Math.floor(x + ox), ty = Math.floor(y + oy);
+      if (ty < 0 || ty >= ROWS || tx < 0 || tx >= COLS || MAP[ty][tx] !== ".") return true;
+    }
+    return false;
+  }
+
+  function update(dt) {
+    if (!running) return;
+    timeLeft -= dt;
+    if (timeLeft <= 0) { timeLeft = 0; endGame(); return; }
+
+    let vx = input.jx + input.kx, vy = input.jy + input.ky;
+    const mag = Math.hypot(vx, vy);
+    if (mag > 1) { vx /= mag; vy /= mag; }
+    if (mag > 0.25) {
+      if (Math.abs(vx) > Math.abs(vy)) { chef.fx = Math.sign(vx); chef.fy = 0; } else { chef.fx = 0; chef.fy = Math.sign(vy); }
+      const r = 0.32;
+      const nx = chef.x + vx * SPEED * dt; if (!hits(nx, chef.y, r)) chef.x = nx;
+      const ny = chef.y + vy * SPEED * dt; if (!hits(chef.x, ny, r)) chef.y = ny;
+      chef.bob += dt * 14;
+    }
+
+    chef.chopT = 0;
+    const T = target();
+    if (input.chop && T && T.c === "K" && T.item && T.item.k === "ing" && !T.item.chopped) {
+      T.item.prog += dt / CHOP_TIME; chef.chopT = 1;
+      if (T.item.prog >= 1) { T.item.prog = 1; T.item.chopped = true; }
+    }
+
+    for (const row of tiles) for (const t of row) {
+      if (t.c === "S" && t.item.n === 3) {
+        const before = potBurnt(t.item);
+        t.item.t += dt;
+        if (!before && potBurnt(t.item)) floats.push({ text: "Burnt!", color: "#e8483b", x: tiles[0].indexOf(t) + 0.5, y: 0.3, t: 1.5 });
+      }
+    }
+
+    for (let i = orders.length - 1; i >= 0; i--) {
+      const o = orders[i]; o.t -= dt;
+      o.bar.style.width = Math.max(0, o.t / o.max * 100) + "%";
+      o.bar.style.background = o.t / o.max < 0.3 ? "#e8483b" : o.t / o.max < 0.6 ? "#f4b740" : "#4caf6a";
+      if (o.t <= 0) { score = Math.max(0, score - 10); missed++; removeOrder(i); float("Order missed −10", "#e8483b"); }
+    }
+    nextOrderIn -= dt;
+    if (nextOrderIn <= 0) {
+      if (orders.length < 4) addOrder();
+      const pace = timeLeft < 60 ? 11 : 15;
+      nextOrderIn = pace + Math.random() * 5;
+    }
+    for (const f of floats) { f.t -= dt; f.y -= dt * 0.6; }
+    floats = floats.filter(f => f.t > 0);
+
+    $("score").textContent = score;
+    const s = Math.ceil(timeLeft);
+    $("timer").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    $("timer").classList.toggle("low", timeLeft < 30);
+  }
+
+  // ---------- draw ----------
+  function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+  function emoji(ch, x, y, size) {
+    ctx.font = `${size}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(ch, x, y + size * 0.05);
+  }
+  function bar(x, y, w, frac, color) {
+    ctx.fillStyle = "rgba(0,0,0,.55)"; rr(x - w / 2, y, w, 6, 3); ctx.fill();
+    ctx.fillStyle = color; rr(x - w / 2 + 1, y + 1, Math.max(0, (w - 2) * Math.min(1, frac)), 4, 2); ctx.fill();
+  }
+  function drawIng(it, cx, cy, s) {
+    if (!it.chopped) { emoji(EMO[it.name], cx, cy, s * 0.55); return; }
+    const e = EMO[it.name], q = s * 0.3;
+    emoji(e, cx - s * 0.14, cy - s * 0.08, q); emoji(e, cx + s * 0.14, cy - s * 0.06, q); emoji(e, cx, cy + s * 0.13, q);
+  }
+  function drawPlate(p, cx, cy, s) {
+    ctx.fillStyle = "#f7f3ea"; ctx.beginPath(); ctx.ellipse(cx, cy, s * 0.36, s * 0.3, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#cfc6b4"; ctx.lineWidth = Math.max(1, s * 0.04); ctx.beginPath(); ctx.ellipse(cx, cy, s * 0.24, s * 0.19, 0, 0, Math.PI * 2); ctx.stroke();
+    p.parts.forEach((part, i) => {
+      if (part.startsWith("soup")) {
+        ctx.fillStyle = SOUP_COLOR[part.split(":")[1]]; ctx.beginPath(); ctx.ellipse(cx, cy, s * 0.22, s * 0.17, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,.35)"; ctx.beginPath(); ctx.ellipse(cx - s * 0.07, cy - s * 0.05, s * 0.06, s * 0.03, 0, 0, Math.PI * 2); ctx.fill();
+      } else emoji(EMO[part], cx + (i === 0 ? -s * 0.1 : s * 0.1), cy, s * 0.3);
+    });
+  }
+  function drawItem(it, cx, cy, s) {
+    if (it.k === "ing") drawIng(it, cx, cy, s);
+    else if (it.k === "plate") drawPlate(it, cx, cy, s);
+  }
+
+  function drawTile(t, x, y, s, time) {
+    const px = x * s, py = y * s;
+    if (t.c === ".") {
+      ctx.fillStyle = (x + y) % 2 ? "#e6dfcd" : "#d9d1bc"; ctx.fillRect(px, py, s, s); return;
+    }
+    ctx.fillStyle = "#8a5634"; ctx.fillRect(px, py, s, s);
+    ctx.fillStyle = "#b8784b"; rr(px + 2, py + 2, s - 4, s - 7, 5); ctx.fill();
+    const cx = px + s / 2, cy = py + s / 2 - 2;
+    switch (t.c) {
+      case "T": case "L": case "O":
+        ctx.fillStyle = "#6b4226"; rr(px + s * 0.12, py + s * 0.14, s * 0.76, s * 0.66, 4); ctx.fill();
+        ctx.strokeStyle = "#a06a40"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(px + s * 0.12, cy); ctx.lineTo(px + s * 0.88, cy); ctx.stroke();
+        emoji(EMO[CRATE[t.c]], cx, cy, s * 0.5); break;
+      case "K":
+        ctx.fillStyle = "#f2ead8"; rr(px + s * 0.12, py + s * 0.14, s * 0.76, s * 0.64, 6); ctx.fill();
+        ctx.fillStyle = "#c9bfa8"; ctx.fillRect(px + s * 0.7, py + s * 0.2, s * 0.08, s * 0.5); break;
+      case "S":
+        ctx.fillStyle = "#3b3f45"; rr(px + 2, py + 2, s - 4, s - 7, 5); ctx.fill();
+        break;
+      case "P":
+        for (let i = 0; i < 3; i++) { ctx.fillStyle = i === 2 ? "#f7f3ea" : "#d8d0c0"; ctx.beginPath(); ctx.ellipse(cx, cy + s * 0.12 - i * s * 0.08, s * 0.34, s * 0.2, 0, 0, Math.PI * 2); ctx.fill(); }
+        break;
+      case "W":
+        ctx.fillStyle = "#f4b740"; rr(px + 4, py + 4, s - 8, s - 11, 6); ctx.fill();
+        ctx.fillStyle = "#5a3b12"; ctx.font = `${Math.round(s * 0.2)}px "Lilita One", sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("SERVE", cx, cy - s * 0.08); emoji("➡️", cx, cy + s * 0.17, s * 0.26); break;
+      case "X":
+        ctx.fillStyle = "#555b62"; rr(px + s * 0.2, py + s * 0.14, s * 0.6, s * 0.66, 6); ctx.fill();
+        ctx.fillStyle = "#30353a"; ctx.beginPath(); ctx.ellipse(cx, py + s * 0.24, s * 0.26, s * 0.08, 0, 0, Math.PI * 2); ctx.fill(); break;
+    }
+    if (t.c === "S") {
+      const p = t.item;
+      ctx.fillStyle = "#1f2226"; ctx.beginPath(); ctx.arc(cx, cy, s * 0.36, 0, Math.PI * 2); ctx.fill();
+      if (p.n === 3 && !potBurnt(p)) { ctx.strokeStyle = `rgba(255,${120 + 60 * Math.sin(time * 10)},40,.9)`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, cy, s * 0.38, 0, Math.PI * 2); ctx.stroke(); }
+      ctx.fillStyle = "#9aa3ad"; ctx.beginPath(); ctx.arc(cx, cy, s * 0.3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#7c858f"; ctx.fillRect(cx + s * 0.26, cy - s * 0.04, s * 0.16, s * 0.08);
+      if (p.n > 0) {
+        ctx.fillStyle = potBurnt(p) ? "#222" : SOUP_COLOR[p.ing];
+        ctx.beginPath(); ctx.arc(cx, cy, s * 0.24 * (0.55 + 0.15 * p.n), 0, Math.PI * 2); ctx.fill();
+        if (!potBurnt(p)) emoji(EMO[p.ing], cx, cy, s * 0.24);
+      }
+      for (let i = 0; i < 3; i++) { ctx.fillStyle = i < p.n ? "#f4b740" : "rgba(255,255,255,.25)"; ctx.beginPath(); ctx.arc(cx - s * 0.16 + i * s * 0.16, py + s * 0.88, s * 0.05, 0, Math.PI * 2); ctx.fill(); }
+      if (p.n === 3) {
+        if (p.t < COOK) bar(cx, py + 2, s * 0.8, p.t / COOK, "#4caf6a");
+        else if (!potBurnt(p)) {
+          emoji("✅", cx + s * 0.28, py + s * 0.18, s * 0.26);
+          if (p.t > COOK + BURN - 4 && Math.sin(time * 18) > 0) { emoji("⚠️", cx - s * 0.28, py + s * 0.18, s * 0.3); }
+          bar(cx, py + 2, s * 0.8, 1 - (p.t - COOK) / BURN, "#e8483b");
+        } else {
+          for (let i = 0; i < 3; i++) { const k = (time * 0.6 + i / 3) % 1; ctx.fillStyle = `rgba(90,90,90,${0.7 * (1 - k)})`; ctx.beginPath(); ctx.arc(cx + Math.sin(i * 2 + time) * s * 0.12, cy - k * s * 0.7, s * (0.1 + k * 0.12), 0, Math.PI * 2); ctx.fill(); }
+        }
+      }
+    } else if (t.item) {
+      drawItem(t.item, cx, cy, s);
+      if (t.c === "K" && t.item.k === "ing" && !t.item.chopped && t.item.prog > 0) bar(cx, py + 2, s * 0.8, t.item.prog, "#3a7bd5");
+    }
+  }
+
+  function drawChef(s, time) {
+    const cx = chef.x * s, cy = chef.y * s, b = Math.sin(chef.bob) * s * 0.03;
+    ctx.fillStyle = "rgba(0,0,0,.18)"; ctx.beginPath(); ctx.ellipse(cx, cy + s * 0.3, s * 0.3, s * 0.1, 0, 0, Math.PI * 2); ctx.fill();
+    // body
+    ctx.fillStyle = "#ffffff"; ctx.strokeStyle = "#2b2620"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy + b, s * 0.3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#e8483b"; ctx.beginPath(); ctx.arc(cx + chef.fx * s * 0.12, cy + b + chef.fy * s * 0.12, s * 0.09, 0, Math.PI * 2); ctx.fill();
+    // hat
+    ctx.fillStyle = "#ffffff"; ctx.beginPath(); ctx.arc(cx - chef.fx * s * 0.05, cy + b - s * 0.18 - chef.fy * s * 0.05, s * 0.17, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    // hands / knife
+    const hx = cx + chef.fx * s * 0.42, hy = cy + b + chef.fy * s * 0.42;
+    if (chef.held) drawItem(chef.held, hx, hy, s * 0.8);
+    else if (chef.chopT) emoji("🔪", hx, hy + Math.sin(time * 30) * s * 0.08, s * 0.32);
+  }
+
+  function draw(time) {
+    const s = tile;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, COLS * s, ROWS * s);
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) drawTile(tiles[y][x], x, y, s, time);
+    if (running) {
+      const tx = Math.floor(chef.x) + chef.fx, ty = Math.floor(chef.y) + chef.fy;
+      if (MAP[ty] && MAP[ty][tx] && MAP[ty][tx] !== ".") {
+        ctx.strokeStyle = "rgba(255,240,150,.95)"; ctx.lineWidth = 3; rr(tx * s + 2, ty * s + 2, s - 4, s - 4, 6); ctx.stroke();
+      }
+    }
+    drawChef(s, time);
+    for (const f of floats) {
+      ctx.globalAlpha = Math.min(1, f.t * 2);
+      ctx.font = `${Math.round(s * 0.34)}px "Lilita One", sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.lineWidth = 4; ctx.strokeStyle = "rgba(0,0,0,.6)"; ctx.strokeText(f.text, f.x * s, f.y * s);
+      ctx.fillStyle = f.color; ctx.fillText(f.text, f.x * s, f.y * s);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function resize() {
+    const r = $("stage").getBoundingClientRect();
+    tile = Math.max(20, Math.floor(Math.min(r.width / COLS, r.height / ROWS)));
+    dpr = window.devicePixelRatio || 1;
+    cv.style.width = tile * COLS + "px"; cv.style.height = tile * ROWS + "px";
+    cv.width = Math.round(tile * COLS * dpr); cv.height = Math.round(tile * ROWS * dpr);
+  }
+  window.addEventListener("resize", resize);
+
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    update(dt); draw(now / 1000);
+    requestAnimationFrame(loop);
+  }
+
+  // ---------- game flow ----------
+  function start() {
+    reset(); running = true;
+    $("startScreen").hidden = true; $("endScreen").hidden = true;
+    try { navigator.wakeLock && navigator.wakeLock.request("screen").catch(() => {}); } catch (e) {}
+  }
+  function endGame() {
+    running = false; input.chop = false;
+    $("finalScore").textContent = score;
+    const stars = score >= 200 ? 3 : score >= 120 ? 2 : score >= 50 ? 1 : 0;
+    $("stars").textContent = "★".repeat(stars) + "☆".repeat(3 - stars);
+    $("finalStats").textContent = `${served} served, ${missed} missed. 1 star at 50, 2 at 120, 3 at 200.`;
+    $("endScreen").hidden = false;
+  }
+  $("playBtn").addEventListener("click", start);
+  $("againBtn").addEventListener("click", start);
+
+  // ---------- touch controls ----------
+  const stick = $("stick"), knob = $("knob");
+  let stickId = null;
+  function stickMove(e) {
+    const r = stick.getBoundingClientRect();
+    let dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+    const R = r.width * 0.38, d = Math.hypot(dx, dy);
+    if (d > R) { dx = dx / d * R; dy = dy / d * R; }
+    knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    input.jx = dx / R; input.jy = dy / R;
+  }
+  stick.addEventListener("pointerdown", e => { e.preventDefault(); stickId = e.pointerId; stick.setPointerCapture(e.pointerId); stickMove(e); });
+  stick.addEventListener("pointermove", e => { if (e.pointerId === stickId) stickMove(e); });
+  const stickEnd = e => { if (e.pointerId !== stickId) return; stickId = null; input.jx = input.jy = 0; knob.style.transform = "translate(-50%, -50%)"; };
+  stick.addEventListener("pointerup", stickEnd); stick.addEventListener("pointercancel", stickEnd);
+
+  const grabBtn = $("grabBtn"), chopBtn = $("chopBtn");
+  grabBtn.addEventListener("pointerdown", e => { e.preventDefault(); grabBtn.classList.add("down"); grab(); });
+  const grabUp = () => grabBtn.classList.remove("down");
+  grabBtn.addEventListener("pointerup", grabUp); grabBtn.addEventListener("pointerleave", grabUp); grabBtn.addEventListener("pointercancel", grabUp);
+  chopBtn.addEventListener("pointerdown", e => { e.preventDefault(); chopBtn.setPointerCapture(e.pointerId); chopBtn.classList.add("down"); input.chop = true; });
+  const chopUp = () => { chopBtn.classList.remove("down"); input.chop = false; };
+  chopBtn.addEventListener("pointerup", chopUp); chopBtn.addEventListener("pointercancel", chopUp);
+  document.addEventListener("contextmenu", e => e.preventDefault());
+
+  // ---------- keyboard (desktop) ----------
+  const keys = new Set();
+  function keyAxes() {
+    input.kx = (keys.has("ArrowRight") || keys.has("d") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0);
+    input.ky = (keys.has("ArrowDown") || keys.has("s") ? 1 : 0) - (keys.has("ArrowUp") || keys.has("w") ? 1 : 0);
+  }
+  window.addEventListener("keydown", e => {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k === " " ) { e.preventDefault(); if (!e.repeat) { if (!running) { if (!$("startScreen").hidden || !$("endScreen").hidden) start(); } else grab(); } return; }
+    if (k === "e" || k === "Shift") { input.chop = true; return; }
+    keys.add(k); keyAxes();
+  });
+  window.addEventListener("keyup", e => {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k === "e" || k === "Shift") { input.chop = false; return; }
+    keys.delete(k); keyAxes();
+  });
+
+  reset(); resize(); requestAnimationFrame(loop);
+})();
+</script>
