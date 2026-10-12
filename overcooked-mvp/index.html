@@ -160,18 +160,18 @@ button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
 (() => {
   // ---------------- data ----------------
   const COLS = 10, ROWS = 11;
-  // # wall  . floor  = counter  B bed  R trauma bay  W waiting chair  T triage desk
+  // # wall  . floor  = counter  B bed head (b foot)  R trauma bay head (r foot)  W waiting chair  T triage desk
   // U supply  P pyxis  K crash cart  L lab  I x-ray/CT  X trash  D discharge  A admit  O OR/cath lab  G generator
   const MAP = [
     "#UPK=L=IX#",
     "#........#",
-    "B........D",
-    "B...==...A",
-    "B........O",
-    "R........#",
-    "R...==...G",
-    "#........B",
-    "#........B",
+    "Bb.......D",
+    "Bb..==...A",
+    "Bb.......O",
+    "Rr.......#",
+    "Rr..==...G",
+    "#.......bB",
+    "#.......bB",
     "#WWWWWT###",
     "##########",
   ];
@@ -274,6 +274,8 @@ button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
     tiles = MAP.map((row, y) => [...row].map((c, x) => ({ c, x, y, item: null, patient: null, dirty: false, t: 0, need: null })));
     let b = 0, r = 0;
     for (const row of tiles) for (const t of row) { if (t.c === "B") t.n = "Bed " + (++b); if (t.c === "R") t.n = "Trauma " + (++r); }
+    // a bed is two tiles long; the foot tile points at the head tile, which holds the bed's state
+    for (const row of tiles) for (const t of row) if (t.c === "b" || t.c === "r") t.head = row.find(h => (h.c === "B" || h.c === "R") && Math.abs(h.x - t.x) === 1);
     docs = [mkDoc(2.5, 7.5, "#3fb8af"), mkDoc(6.5, 7.5, "#9b7ede")];
     active = 0;
     S = {
@@ -294,7 +296,7 @@ button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
   function targetOf(d) {
     const tx = Math.floor(d.x) + d.fx, ty = Math.floor(d.y) + d.fy;
     if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) return null;
-    return tiles[ty][tx];
+    return tiles[ty][tx].head || tiles[ty][tx];
   }
   function patientAt(t) {
     if (!t) return null;
@@ -787,10 +789,16 @@ button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
   const NAMES = { U: "Supply shelf", P: "Pyxis", K: "Crash cart", L: "Lab", I: "X-ray / CT", X: "Trash", D: "Discharge", A: "Admit", O: "OR / Cath lab", G: "Generator", T: "Triage desk", "=": "Counter", W: "Waiting chair" };
   function hintFor(d) {
     const T = targetOf(d);
-    if (!T || T.c === "." || T.c === "#") return "Walk up to something and face it.";
+    if (!T || T.c === "." || T.c === "#") return d.held && d.held.k === "pt" ? "Walk to a clean bed, face it, and tap GRAB." : "Walk up to something and face it.";
     const P = patientAt(T);
     if (P && P.code) return `<b>Code Blue!</b> Tap CPR when the ring turns green.${P.code.ready > 0 ? " Tap CLEAR now!" : ""}`;
     if (T.c === "B" || T.c === "R") {
+      const carry = d.held && d.held.k === "pt" ? d.held.p : null;
+      if (!P && carry) {
+        if (T.dirty) return `<b>${T.n}</b> is dirty. Put the patient down somewhere else, or clean it first.`;
+        if (carry.def.trauma && T.c !== "R") return `<b>Car crashes need a trauma bay</b> (red beds).`;
+        return `<b>Tap GRAB</b> to put ${carry.def.n} in ${T.n}.`;
+      }
       if (!P) return T.dirty ? `<b>${T.n}</b> is dirty. Hold USE to clean.` : `<b>${T.n}</b> is free.${T.c === "R" ? " Car crashes go here." : ""}`;
       return `<b>${T.n}:</b> ${P.def.n}. Next: ${nextText(P)}`;
     }
@@ -867,6 +875,7 @@ button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
     const focusT = targetOf(docs[active]);
     if (t.c === ".") { ctx.fillStyle = (t.x + t.y) % 2 ? "#e6eef0" : "#d8e3e6"; ctx.fillRect(px, py, s, s); return; }
     if (t.c === "#") { ctx.fillStyle = "#38505b"; ctx.fillRect(px, py, s, s); return; }
+    if (t.c === "b" || t.c === "r") return;
     ctx.fillStyle = "#2b414a"; ctx.fillRect(px, py, s, s);
     if (t.c === "=") {
       ctx.fillStyle = "#c9d6da"; rr(px + 2, py + 2, s - 4, s - 6, 4); ctx.fill();
@@ -881,26 +890,48 @@ button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
       return;
     }
     if (t.c === "B" || t.c === "R") {
-      ctx.fillStyle = t.c === "R" ? "#b0303a" : "#2b414a"; ctx.fillRect(px, py, s, s);
-      ctx.fillStyle = t.dirty ? "#d9cfae" : "#f7fbfc"; rr(px + 3, py + 3, s - 6, s - 6, 5); ctx.fill();
-      ctx.fillStyle = t.dirty ? "#c4b48a" : "#cfe3ea"; rr(px + 5, py + 5, s - 10, s * 0.22, 4); ctx.fill();
+      // hospital bed seen from above: headboard against the wall, pillow, blanket toward the floor side
+      const head = t.x === 0 ? -1 : 1;              // -1: head on the left wall, 1: head on the right wall
+      const L = s * 2;                               // bed length: head tile + foot tile
+      const X = f => head < 0 ? px + f * L : px + s - f * L; // f = 0 at the head end, 1 at the foot end
+      ctx.fillStyle = t.c === "R" ? "#7d1f27" : "#2b414a"; ctx.fillRect(Math.min(X(0), X(1)), py, L, s);
+      const span = (a, b) => [Math.min(X(a), X(b)), Math.abs(X(b) - X(a))];
+      ctx.fillStyle = "#1c2a30";                     // wheels
+      for (const f of [0.12, 0.9]) for (const fy of [0.14, 0.86]) { ctx.beginPath(); ctx.arc(X(f), py + fy * s, s * 0.05, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = "#9fb3bb";                     // frame and side rails
+      let [fx, fw] = span(0.03, 0.97); rr(fx, py + s * 0.12, fw, s * 0.76, 5); ctx.fill();
+      ctx.fillStyle = t.dirty ? "#e7dcc0" : "#ffffff"; // mattress / sheet
+      [fx, fw] = span(0.07, 0.94); rr(fx, py + s * 0.17, fw, s * 0.66, 5); ctx.fill();
+      ctx.fillStyle = "#5d7782";                     // headboard
+      [fx, fw] = span(0.01, 0.07); rr(fx, py + s * 0.06, fw, s * 0.88, 3); ctx.fill();
+      ctx.fillStyle = "#7d939c";                     // footboard
+      [fx, fw] = span(0.94, 0.985); rr(fx, py + s * 0.14, fw, s * 0.72, 2); ctx.fill();
+      ctx.fillStyle = t.dirty ? "#d6c79c" : "#e9f2f5"; // pillow
+      ctx.beginPath(); ctx.ellipse(X(0.17), py + s * 0.5, s * 0.14, s * 0.26, 0, 0, Math.PI * 2); ctx.fill();
+      const blanket = t.dirty ? "#b9a77a" : t.c === "R" ? "#d9434b" : "#5aa0d8";
+      ctx.fillStyle = blanket;                       // blanket over the foot half
+      [fx, fw] = span(0.4, 0.93); rr(fx, py + s * 0.17, fw, s * 0.66, 4); ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,.4)";        // folded edge
+      [fx, fw] = span(0.4, 0.46); ctx.fillRect(fx, py + s * 0.17, fw, s * 0.66);
+      const mid = X(0.7);
+      if (t.c === "R") { ctx.fillStyle = "#ffffff"; ctx.fillRect(mid - s * 0.04, py + s * 0.32, s * 0.08, s * 0.36); ctx.fillRect(mid - s * 0.18, py + s * 0.46, s * 0.36, s * 0.08); }
+      else if (!t.patient) label(t.n.split(" ")[1], mid, py + s * 0.5, s * 0.32, "rgba(255,255,255,.85)");
       if (t.dirty && !t.patient) {
-        ctx.fillStyle = "rgba(140,110,60,.55)"; ctx.beginPath(); ctx.arc(cx - s * 0.1, cy + s * 0.08, s * 0.1, 0, Math.PI * 2); ctx.arc(cx + s * 0.14, cy - s * 0.02, s * 0.07, 0, Math.PI * 2); ctx.fill();
-        if (t.t > 0) bar(cx, py + 2, s * 0.8, t.t / 3, "#4c8dff");
+        ctx.fillStyle = "rgba(120,90,40,.55)"; ctx.beginPath(); ctx.arc(X(0.3), py + s * 0.64, s * 0.09, 0, Math.PI * 2); ctx.arc(X(0.62), py + s * 0.34, s * 0.08, 0, Math.PI * 2); ctx.arc(X(0.8), py + s * 0.62, s * 0.06, 0, Math.PI * 2); ctx.fill();
+        if (t.t > 0) bar(mid, py + 2, s * 1.2, t.t / 3, "#4c8dff");
       }
-      if (t.c === "R" && !t.patient) label("TRAUMA", cx, cy + s * 0.18, s * 0.17, "#b0303a");
       const p = t.patient;
       if (p) {
-        drawPatient(p, cx, cy + s * 0.04, s, time);
-        if (p.code) drawCode(p, cx, cy, s, beatTime(), focusT === t);
+        drawPatient(p, X(0.2), cy, s, time);
+        if (p.code) drawCode(p, X(0.5), cy, s, beatTime(), focusT === t);
         else {
-          if (p.procStep && p.procT > 0) bar(cx, py + 1, s * 0.8, p.procT / STEPS[p.procStep].secs, "#2f7fd1");
-          if (p.boarding) bar(cx, py + 1, s * 0.8, p.board / 60, "#9fc0c8");
-          // next-step bubble, drawn toward the floor side
-          const bx = t.x === 0 ? px + s * 1.05 : px - s * 0.05, by = py + s * 0.2;
-          ctx.fillStyle = p.stable ? "#f6c445" : "#ffffff"; ctx.beginPath(); ctx.arc(bx, by, s * 0.2, 0, Math.PI * 2); ctx.fill();
+          if (p.procStep && p.procT > 0) bar(X(0.5), py + 1, s * 1.4, p.procT / STEPS[p.procStep].secs, "#2f7fd1");
+          if (p.boarding) bar(X(0.5), py + 1, s * 1.4, p.board / 60, "#9fc0c8");
+          // next-step bubble on the blanket
+          const bx = mid, by = cy;
+          ctx.fillStyle = p.stable ? "#f6c445" : "#ffffff"; ctx.beginPath(); ctx.arc(bx, by, s * 0.25, 0, Math.PI * 2); ctx.fill();
           ctx.strokeStyle = "#10202a"; ctx.lineWidth = 1.5; ctx.stroke();
-          emoji(nextIcon(p), bx, by, s * 0.24);
+          emoji(nextIcon(p), bx, by, s * 0.3);
         }
       }
       return;
@@ -951,7 +982,10 @@ button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
     if (!S) return;
     for (const row of tiles) for (const t of row) drawTile(t, s, time);
     const d = docs[active], T = targetOf(d);
-    if (T && T.c !== "." && T.c !== "#" && !S.over) { ctx.strokeStyle = "rgba(255,230,120,.95)"; ctx.lineWidth = 3; rr(T.x * s + 2, T.y * s + 2, s - 4, s - 4, 6); ctx.stroke(); }
+    if (T && T.c !== "." && T.c !== "#" && !S.over) {
+      const bed = T.c === "B" || T.c === "R", hx = bed && T.x !== 0 ? T.x - 1 : T.x, w = bed ? 2 : 1;
+      ctx.strokeStyle = "rgba(255,230,120,.95)"; ctx.lineWidth = 3; rr(hx * s + 2, T.y * s + 2, w * s - 4, s - 4, 6); ctx.stroke();
+    }
     const waitExtra = S.waiting.length - 5;
     if (waitExtra > 0) { ctx.fillStyle = "#e5383b"; rr(6.1 * s, 8.15 * s, s * 0.8, s * 0.7, 6); ctx.fill(); label(`+${waitExtra}`, 6.5 * s, 8.5 * s, s * 0.3, "#fff"); }
     if (S.patients.some(p => p.type === "fever")) emoji("🧍", S.parent.x * s, S.parent.y * s, s * 0.5);
