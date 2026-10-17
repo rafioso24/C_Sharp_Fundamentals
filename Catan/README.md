@@ -2,7 +2,11 @@
 
 A console version of Settlers of Catan: you vs. 1-3 bots.
 
-## Run
+## Play in a browser
+
+Open `web/index.html` in any browser. Click a corner or edge on the board to build.
+
+## Run in the console
 
 Needs the .NET 8 SDK.
 
